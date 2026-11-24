@@ -53,6 +53,8 @@ enum CardSide {
     #[default]
     Right,
     Left,
+    /// No room outside (full screen): the card lies on top of the main window's right edge.
+    Inside,
 }
 
 struct KoiiApp {
@@ -205,17 +207,25 @@ impl KoiiApp {
     }
 }
 
-/// Right side if the card fits on screen there, otherwise left.
+/// Right side if the card fits on screen there, otherwise left,
+/// otherwise inside the window (full screen, or no room on either side).
 /// (Phase 7 adds a Settings choice for this.)
 fn choose_card_side(ctx: &egui::Context) -> CardSide {
     let info = ctx.input(|i| i.viewport().clone());
-    match (info.outer_rect, info.monitor_size) {
-        (Some(outer), Some(monitor))
-            if outer.max.x - WINDOW_INVISIBLE_BORDER + HELP_CARD_WIDTH > monitor.x =>
-        {
-            CardSide::Left
-        }
-        _ => CardSide::Right,
+    if info.maximized == Some(true) || info.fullscreen == Some(true) {
+        return CardSide::Inside;
+    }
+    let (Some(outer), Some(monitor)) = (info.outer_rect, info.monitor_size) else {
+        return CardSide::Right;
+    };
+    let right_fits = outer.max.x - WINDOW_INVISIBLE_BORDER + HELP_CARD_WIDTH <= monitor.x;
+    let left_fits = outer.min.x + WINDOW_INVISIBLE_BORDER - HELP_CARD_WIDTH >= 0.0;
+    if right_fits {
+        CardSide::Right
+    } else if left_fits {
+        CardSide::Left
+    } else {
+        CardSide::Inside
     }
 }
 
@@ -224,7 +234,7 @@ fn card_rect(main_outer: egui::Rect, side: CardSide) -> egui::Rect {
     let top = main_outer.min.y;
     let height = main_outer.height() - WINDOW_INVISIBLE_BORDER;
     let left = match side {
-        CardSide::Right => main_outer.max.x - WINDOW_INVISIBLE_BORDER,
+        CardSide::Right | CardSide::Inside => main_outer.max.x - WINDOW_INVISIBLE_BORDER,
         CardSide::Left => main_outer.min.x + WINDOW_INVISIBLE_BORDER - HELP_CARD_WIDTH,
     };
     egui::Rect::from_min_size(egui::pos2(left, top), egui::vec2(HELP_CARD_WIDTH, height))
@@ -271,7 +281,7 @@ impl eframe::App for KoiiApp {
         }
 
         // Main area.
-        egui::CentralPanel::default_margins().show(ui, |ui| {
+        let main_area = egui::CentralPanel::default_margins().show(ui, |ui| {
             ui.horizontal_top(|ui| {
                 ui.vertical(|ui| self.pad_grid(ui));
                 ui.add_space(24.0);
@@ -286,7 +296,7 @@ impl eframe::App for KoiiApp {
             self.beat_view(ui);
         });
 
-        self.show_help_card(&ctx);
+        self.show_help_card(&ctx, main_area.response.rect);
     }
 }
 
@@ -599,14 +609,29 @@ impl KoiiApp {
     ///
     /// The card window is created (hidden) when the app starts and is drawn every frame,
     /// so showing it is instant: no black "empty window" flash. Windows fades it in and out.
-    fn show_help_card(&mut self, ctx: &egui::Context) {
+    fn show_help_card(&mut self, ctx: &egui::Context, main_area: egui::Rect) {
         let main_info = ctx.input(|i| i.viewport().clone());
         let Some(main_outer) = main_info.outer_rect else {
             ctx.request_repaint();
             return;
         };
         let minimized = main_info.minimized == Some(true);
+
+        // While open: move between "outside" and "inside" when the room changes
+        // (e.g. full screen on/off). Left/right stays as picked, so it doesn't jump around.
+        if self.help_open {
+            let wanted = choose_card_side(ctx);
+            if (wanted == CardSide::Inside) != (self.card_side == CardSide::Inside) {
+                self.card_side = wanted;
+            }
+        }
+        let inside = self.card_side == CardSide::Inside;
         let rect = card_rect(main_outer, self.card_side);
+
+        let mut close_clicked = false;
+        if self.help_open && inside {
+            self.show_inside_card(ctx, main_area, &mut close_clicked);
+        }
 
         let builder = egui::ViewportBuilder::default()
             .with_title("How do I…?")
@@ -614,12 +639,11 @@ impl KoiiApp {
             .with_resizable(false)
             .with_taskbar(false)
             .with_active(false)
-            .with_visible(self.help_open && !minimized)
+            .with_visible(self.help_open && !inside && !minimized)
             .with_position(rect.min)
             .with_inner_size(rect.size());
 
         let side = self.card_side;
-        let mut close_clicked = false;
         let mut card_closed_by_os = false;
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("help_card"),
@@ -635,7 +659,7 @@ impl KoiiApp {
                     // Thin line on the side that touches the main window.
                     let area = ui.max_rect().expand(8.0);
                     let edge_x = match side {
-                        CardSide::Right => area.left() + 0.5,
+                        CardSide::Right | CardSide::Inside => area.left() + 0.5,
                         CardSide::Left => area.right() - 0.5,
                     };
                     ui.painter().vline(
@@ -651,5 +675,29 @@ impl KoiiApp {
         if close_clicked || card_closed_by_os {
             self.help_open = false;
         }
+    }
+
+    /// Full screen: the card lies on top of the right edge of the main area.
+    /// Nothing underneath moves; it is just covered while the card is open.
+    fn show_inside_card(&self, ctx: &egui::Context, main_area: egui::Rect, close_clicked: &mut bool) {
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(main_area.max.x - HELP_CARD_WIDTH, main_area.min.y),
+            main_area.max,
+        );
+        egui::Area::new(egui::Id::unique("help_card_inside"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(rect.min)
+            .show(ctx, |ui| {
+                let visuals = ui.visuals().clone();
+                egui::Frame::new()
+                    .fill(visuals.panel_fill)
+                    .stroke(visuals.widgets.noninteractive.bg_stroke)
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.set_min_size(rect.size() - egui::vec2(16.0, 16.0));
+                        ui.set_max_width(rect.width() - 16.0);
+                        help_contents(ui, close_clicked);
+                    });
+            });
     }
 }

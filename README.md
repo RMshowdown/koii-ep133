@@ -29,7 +29,7 @@ Tests: `cargo test`
 |---|---|---|
 | 0 | Project setup, empty window, size limits (min 960x620, start 1200x760, max 1600x1000), "How do I…?" card shell: a separate borderless window docked to the right edge (left if no room), Winamp-style; main window never resizes | done |
 | 1 | Connect to KO II over USB-C, "Read pads from KO II" (read-only), tap a pad to hear it, remember the pad map (`%APPDATA%\koii-ep133\pad-map.json`) | done (tested on KO II, OS 2.5.1) |
-| 2 | Lo-fi / hip-hop drummer: Play/Stop, Tempo, Swing, Style, New beat, fill on bar 4, 16-step view; drum pads picked from sound names | built, not yet heard on KO II |
+| 2 | Lo-fi / hip-hop drummer: Play/Stop, Tempo, Swing, Style, New beat, fill on bar 4, 16-step view; drum pads picked from sound names | done (tested on KO II) |
 | 3 | "How do I…?" right-side panel: search by goal, step-by-step with buttons lit on a KO II drawing | |
 | 4 | Bass + melody locked to one key | |
 | 5 | Keep / Skip, song library, export MIDI file | |
