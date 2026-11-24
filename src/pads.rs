@@ -35,6 +35,19 @@ pub struct PadInfo {
     pub slot: Option<u16>,
 }
 
+/// A pad: group (0 = A) and index in PAD_LABELS order.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PadRef {
+    pub group: usize,
+    pub pad: usize,
+}
+
+impl PadRef {
+    pub fn note(self) -> u8 {
+        midi_note(self.group, self.pad)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct PadMap {
     /// KO II project (1-9) these pads were read from.
@@ -43,6 +56,9 @@ pub struct PadMap {
     /// 4 groups x 12 pads, in PAD_LABELS order.
     #[serde(default)]
     pub groups: Vec<Vec<PadInfo>>,
+    /// Pads the drummer uses for Kick, Snare, Hat.
+    #[serde(default)]
+    pub drums: [Option<PadRef>; 3],
 }
 
 impl Default for PadMap {
@@ -50,11 +66,52 @@ impl Default for PadMap {
         Self {
             project: None,
             groups: vec![vec![PadInfo::default(); 12]; 4],
+            drums: [None; 3],
         }
     }
 }
 
+/// Words in sound names for Kick, Snare, Hat (best match first).
+const DRUM_WORDS: [&[&str]; 3] = [
+    &["kick", "bd", "bass drum"],
+    &["snare", "clap", "sd", "rim"],
+    &["closed hat", "hat", "hh", "shaker"],
+];
+
+/// Factory sample slots per kind (community docs: kick 1-99, snare 100-199, hat 200-299).
+const DRUM_SLOTS: [std::ops::RangeInclusive<u16>; 3] = [1..=99, 100..=199, 200..=299];
+
+/// Pads used when we know nothing about the sounds: ".", "2", "5" in group A.
+const FALLBACK_PADS: [usize; 3] = [9, 7, 4];
+
 impl PadMap {
+    /// Pick Kick / Snare / Hat pads from sound names (then slot numbers),
+    /// searching group A first. Keeps picks the user already made.
+    pub fn auto_pick_drums(&mut self) {
+        for drum in 0..3 {
+            if self.drums[drum].is_some() {
+                continue;
+            }
+            self.drums[drum] = self.find_drum(drum).or(Some(PadRef { group: 0, pad: FALLBACK_PADS[drum] }));
+        }
+    }
+
+    fn find_drum(&self, drum: usize) -> Option<PadRef> {
+        let all = || {
+            (0..4).flat_map(|group| (0..12).map(move |pad| PadRef { group, pad }))
+        };
+        for word in DRUM_WORDS[drum] {
+            if let Some(found) = all().find(|r| self.pad(r.group, r.pad).name.to_lowercase().contains(word)) {
+                return Some(found);
+            }
+        }
+        all().find(|r| {
+            self.pad(r.group, r.pad)
+                .slot
+                .is_some_and(|s| DRUM_SLOTS[drum].contains(&s))
+        })
+    }
+
     pub fn pad(&self, group: usize, pad: usize) -> &PadInfo {
         &self.groups[group][pad]
     }
@@ -121,6 +178,24 @@ mod tests {
         // Project 8, group D, pad "6" = 9506 (krate protocol-evidence.md).
         assert_eq!(pad_file_id(8, 3, 5), 10506);
         assert_eq!(pad_file_id(7, 3, 5), 9506);
+    }
+
+    #[test]
+    fn auto_pick_uses_names_then_fallback() {
+        let mut map = PadMap::default();
+        map.pad_mut(0, 9).name = "kick grit".into();
+        map.pad_mut(0, 11).name = "clap real".into();
+        map.pad_mut(0, 7).name = "snare rim".into();
+        map.pad_mut(0, 4).name = "closed hat lo".into();
+        map.pad_mut(0, 5).name = "open hat real".into();
+        map.auto_pick_drums();
+        assert_eq!(map.drums[0], Some(PadRef { group: 0, pad: 9 }));
+        assert_eq!(map.drums[1], Some(PadRef { group: 0, pad: 7 })); // "snare" beats "clap"
+        assert_eq!(map.drums[2], Some(PadRef { group: 0, pad: 4 })); // closed hat first
+
+        let mut empty = PadMap::default();
+        empty.auto_pick_drums();
+        assert_eq!(empty.drums[0], Some(PadRef { group: 0, pad: 9 }));
     }
 
     #[test]

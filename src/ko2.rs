@@ -10,7 +10,27 @@ use eframe::egui;
 use midir::{Ignore, MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// The MIDI output to the KO II, shared with the drummer thread. None = not connected.
+#[derive(Clone, Default)]
+pub struct MidiOut(Arc<Mutex<Option<MidiOutputConnection>>>);
+
+impl MidiOut {
+    /// Send one MIDI message. Returns false if not connected or sending failed.
+    pub fn send(&self, msg: &[u8]) -> bool {
+        let mut guard = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        match guard.as_mut() {
+            Some(out) => out.send(msg).is_ok(),
+            None => false,
+        }
+    }
+
+    fn set(&self, conn: Option<MidiOutputConnection>) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = conn;
+    }
+}
 
 /// Commands from the window to the MIDI thread.
 pub enum Command {
@@ -42,17 +62,20 @@ pub struct ReadResult {
 pub struct Ko2 {
     commands: Sender<Command>,
     events: Receiver<Event>,
+    pub out: MidiOut,
 }
 
 impl Ko2 {
     pub fn start(ctx: egui::Context) -> Self {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (ev_tx, ev_rx) = mpsc::channel();
+        let out = MidiOut::default();
+        let worker_out = out.clone();
         std::thread::Builder::new()
             .name("ko2-midi".into())
-            .spawn(move || Worker::new(cmd_rx, ev_tx, ctx).run())
+            .spawn(move || Worker::new(cmd_rx, ev_tx, ctx, worker_out).run())
             .expect("start MIDI thread");
-        Self { commands: cmd_tx, events: ev_rx }
+        Self { commands: cmd_tx, events: ev_rx, out }
     }
 
     pub fn send(&self, command: Command) {
@@ -72,7 +95,7 @@ fn is_ko2_port(name: &str) -> bool {
 
 struct Connection {
     port_name: String,
-    out: MidiOutputConnection,
+    out: MidiOut,
     _input: MidiInputConnection<()>,
     sysex: Receiver<Vec<u8>>,
     next_id: u16,
@@ -82,6 +105,7 @@ struct Worker {
     commands: Receiver<Command>,
     events: Sender<Event>,
     ctx: egui::Context,
+    out: MidiOut,
     conn: Option<Connection>,
     last_busy: Option<String>,
 }
@@ -99,8 +123,8 @@ impl From<String> for ReadError {
 }
 
 impl Worker {
-    fn new(commands: Receiver<Command>, events: Sender<Event>, ctx: egui::Context) -> Self {
-        Self { commands, events, ctx, conn: None, last_busy: None }
+    fn new(commands: Receiver<Command>, events: Sender<Event>, ctx: egui::Context, out: MidiOut) -> Self {
+        Self { commands, events, ctx, out, conn: None, last_busy: None }
     }
 
     fn emit(&self, event: Event) {
@@ -132,15 +156,14 @@ impl Worker {
     }
 
     fn send_midi(&mut self, msg: &[u8]) {
-        if let Some(conn) = &mut self.conn {
-            if conn.out.send(msg).is_err() {
-                self.drop_connection();
-            }
+        if self.conn.is_some() && !self.out.send(msg) {
+            self.drop_connection();
         }
     }
 
     fn drop_connection(&mut self) {
         if self.conn.take().is_some() {
+            self.out.set(None);
             self.emit(Event::Disconnected);
         }
     }
@@ -158,7 +181,7 @@ impl Worker {
         match (&self.conn, found) {
             (Some(conn), Some(name)) if conn.port_name == name => {}
             (Some(_), _) => self.drop_connection(),
-            (None, Some(name)) => match open(&name) {
+            (None, Some(name)) => match open(&name, &self.out) {
                 Ok(conn) => {
                     self.last_busy = None;
                     self.conn = Some(conn);
@@ -262,7 +285,7 @@ impl Worker {
     }
 }
 
-fn open(port_name: &str) -> Result<Connection, String> {
+fn open(port_name: &str, shared_out: &MidiOut) -> Result<Connection, String> {
     const BUSY: &str = "KO II found, but another app is using it. Close the TE Sample Tool web page or other music apps.";
     let out = MidiOutput::new("KO II Lo-fi Drummer").map_err(|e| e.to_string())?;
     let out_port = out
@@ -294,9 +317,10 @@ fn open(port_name: &str) -> Result<Connection, String> {
         )
         .map_err(|_| BUSY.to_string())?;
 
+    shared_out.set(Some(out_conn));
     Ok(Connection {
         port_name: port_name.to_string(),
-        out: out_conn,
+        out: shared_out.clone(),
         _input: in_conn,
         sysex: rx,
         next_id: 1,
@@ -336,9 +360,9 @@ fn request(conn: &mut Connection, command: u8, raw_body: &[u8]) -> Result<Vec<u8
     if conn.next_id == 0 {
         conn.next_id = 1;
     }
-    conn.out
-        .send(&sysex::build_request(id, command, raw_body))
-        .map_err(|_| "Could not send to the KO II.".to_string())?;
+    if !conn.out.send(&sysex::build_request(id, command, raw_body)) {
+        return Err("Could not send to the KO II.".to_string().into());
+    }
 
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {

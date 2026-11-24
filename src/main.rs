@@ -1,13 +1,17 @@
 // Hide the black console window in release builds on Windows.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod beat;
+mod drummer;
 mod ko2;
 mod pads;
 mod sysex;
 
+use beat::{DRUMS, STEPS, STYLES, Style};
+use drummer::{Drummer, LOOP_BARS};
 use eframe::egui;
 use ko2::{Command, Event, Ko2};
-use pads::{GROUPS, PAD_LABELS, PadMap};
+use pads::{GROUPS, PAD_LABELS, PadMap, PadRef};
 
 // Window size limits (width, height in points). Owner can ask to change these.
 const START_SIZE: [f32; 2] = [1200.0, 760.0];
@@ -70,16 +74,39 @@ struct KoiiApp {
     /// Last "Read pads" message for the user.
     read_message: String,
     os_version: Option<String>,
+
+    drummer: Drummer,
+    style: Style,
 }
 
 impl KoiiApp {
     fn new(ctx: &egui::Context) -> Self {
+        ctx.set_theme(egui::Theme::Dark);
+        let ko2 = Ko2::start(ctx.clone());
+        let mut pad_map = PadMap::load();
+        pad_map.auto_pick_drums();
+        let style = Style::LofiChill;
+        let (bpm, swing) = style.defaults();
+        let drummer = Drummer::start(
+            ko2.out.clone(),
+            ctx.clone(),
+            drummer::Settings {
+                playing: false,
+                bpm,
+                swing,
+                fills: true,
+                beat: beat::new_beat(style),
+                notes: pad_map.drums.map(|d| d.map(PadRef::note)),
+            },
+        );
         Self {
             help_open: false,
             card_side: CardSide::default(),
-            ko2: Ko2::start(ctx.clone()),
+            ko2,
+            drummer,
+            style,
             link: Link::NotConnected,
-            pad_map: PadMap::load(),
+            pad_map,
             group: 0,
             selected: None,
             held: None,
@@ -138,6 +165,14 @@ impl KoiiApp {
                 }
             }
         }
+        // Re-pick drums whose pad has no sound in this project.
+        for drum in self.pad_map.drums.iter_mut() {
+            if drum.is_some_and(|r| self.pad_map.groups[r.group][r.pad].slot.is_none()) {
+                *drum = None;
+            }
+        }
+        self.pad_map.auto_pick_drums();
+        self.sync_drum_notes();
         self.save_pad_map();
         self.read_message = if found == 0 {
             format!(
@@ -152,6 +187,12 @@ impl KoiiApp {
 
     fn connected(&self) -> bool {
         matches!(self.link, Link::Connected(_))
+    }
+
+    /// Tell the drummer which notes to play for Kick / Snare / Hat.
+    fn sync_drum_notes(&self) {
+        let notes = self.pad_map.drums.map(|d| d.map(PadRef::note));
+        self.drummer.update(|s| s.notes = notes);
     }
 }
 
@@ -234,8 +275,15 @@ impl eframe::App for KoiiApp {
             ui.horizontal_top(|ui| {
                 ui.vertical(|ui| self.pad_grid(ui));
                 ui.add_space(24.0);
-                ui.vertical(|ui| self.side_box(ui));
+                ui.vertical(|ui| {
+                    self.controls(ui);
+                    ui.add_space(14.0);
+                    self.side_box(ui);
+                });
             });
+            ui.add_space(14.0);
+            ui.separator();
+            self.beat_view(ui);
         });
 
         self.show_help_card(&ctx);
@@ -256,9 +304,156 @@ impl KoiiApp {
         ui.colored_label(dot, "●");
     }
 
+    /// Play / Stop, Tempo, Swing, Style, fills, New beat.
+    fn controls(&mut self, ui: &mut egui::Ui) {
+        let mut s = self.drummer.get();
+        let mut changed = false;
+        ui.strong("Controls");
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let size = egui::vec2(140.0, 34.0);
+            if ui
+                .add_sized(size, egui::Button::new("▶  Play").selected(s.playing))
+                .clicked()
+            {
+                s.playing = true;
+                changed = true;
+            }
+            if ui.add_sized(size, egui::Button::new("■  Stop")).clicked() {
+                s.playing = false;
+                changed = true;
+            }
+        });
+        // Say clearly why there is no sound, right under Play.
+        let warn = egui::Color32::from_rgb(230, 170, 60);
+        match &self.link {
+            Link::Connected(_) => {}
+            Link::NotConnected => {
+                ui.colored_label(warn, "No sound: KO II not connected. Plug it in with USB-C.");
+            }
+            Link::Busy(_) => {
+                ui.colored_label(
+                    warn,
+                    "No sound: another app is using the KO II. Close other copies of this app or the TE web tool.",
+                );
+            }
+        }
+        ui.add_space(6.0);
+        egui::Grid::new("controls_grid")
+            .num_columns(2)
+            .spacing(egui::vec2(12.0, 8.0))
+            .show(ui, |ui| {
+                ui.label("Tempo");
+                changed |= ui
+                    .add(egui::Slider::new(&mut s.bpm, 60.0..=140.0).step_by(1.0).fixed_decimals(0).suffix(" BPM"))
+                    .changed();
+                ui.end_row();
+                ui.label("Swing");
+                changed |= ui
+                    .add(egui::Slider::new(&mut s.swing, 50.0..=75.0).step_by(1.0).fixed_decimals(0).suffix("%"))
+                    .on_hover_text("50% = straight. Higher = lazier, bouncier feel.")
+                    .changed();
+                ui.end_row();
+                ui.label("Style");
+                let mut style = self.style;
+                egui::ComboBox::from_id_salt("style")
+                    .width(180.0)
+                    .selected_text(style.name())
+                    .show_ui(ui, |ui| {
+                        for st in STYLES {
+                            ui.selectable_value(&mut style, st, st.name());
+                        }
+                    });
+                if style != self.style {
+                    // New style: its own tempo, swing and a fresh beat.
+                    self.style = style;
+                    (s.bpm, s.swing) = style.defaults();
+                    s.beat = beat::new_beat(style);
+                    changed = true;
+                }
+                ui.end_row();
+                ui.label("Fills");
+                changed |= ui.checkbox(&mut s.fills, "Fill on bar 4").changed();
+                ui.end_row();
+            });
+        ui.add_space(8.0);
+        if ui
+            .add_sized(egui::vec2(290.0, 34.0), egui::Button::new("🎲  New beat"))
+            .clicked()
+        {
+            s.beat = beat::new_beat(self.style);
+            changed = true;
+        }
+        if changed {
+            self.drummer.update(|d| {
+                d.playing = s.playing;
+                d.bpm = s.bpm;
+                d.swing = s.swing;
+                d.fills = s.fills;
+                d.beat = s.beat.clone();
+            });
+        }
+    }
+
+    /// "Now playing": 16 steps x 3 drums, with the step now playing outlined.
+    fn beat_view(&mut self, ui: &mut egui::Ui) {
+        let s = self.drummer.get();
+        let pos = self.drummer.position();
+        let bar = pos.map(|(b, _)| b).unwrap_or(0);
+        let showing_fill = s.fills && bar == LOOP_BARS - 1;
+        let title = match pos {
+            Some((b, _)) => format!(
+                "Now playing · bar {} of {LOOP_BARS}{}",
+                b + 1,
+                if s.fills { format!(" · fill on bar {LOOP_BARS}") } else { String::new() }
+            ),
+            None => "Beat · press Play".to_string(),
+        };
+        ui.strong(title);
+        ui.add_space(4.0);
+        let pattern = if showing_fill { &s.beat.fill } else { &s.beat.main };
+        let label_w = 60.0;
+        let gap = 4.0;
+        let cell_w = ((ui.available_width() - label_w - gap * 16.0 - 12.0) / 16.0).clamp(20.0, 56.0);
+        let cell = egui::vec2(cell_w, 22.0);
+        let visuals = ui.visuals().clone();
+        let hit_color = egui::Color32::from_rgb(200, 200, 190);
+        let play_color = egui::Color32::from_rgb(90, 150, 230);
+        // Hat on top, Kick at the bottom (like the wireframe).
+        for &drum in DRUMS.iter().rev() {
+            ui.horizontal(|ui| {
+                ui.add_sized(egui::vec2(label_w, cell.y), egui::Label::new(drum.name()));
+                for step in 0..STEPS {
+                    if step > 0 && step % 4 == 0 {
+                        ui.add_space(gap);
+                    }
+                    let (rect, _) = ui.allocate_exact_size(cell, egui::Sense::hover());
+                    let v = pattern[drum as usize][step];
+                    let fill = if v == 0 {
+                        visuals.extreme_bg_color
+                    } else {
+                        // Quiet hits (ghost notes) look dimmer.
+                        hit_color.gamma_multiply(0.35 + 0.65 * v as f32 / 127.0)
+                    };
+                    ui.painter().rect_filled(rect, 3.0, fill);
+                    if pos.map(|(_, st)| st) == Some(step) {
+                        ui.painter().rect_stroke(
+                            rect,
+                            3.0,
+                            egui::Stroke::new(2.0, play_color),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                }
+            });
+        }
+    }
+
     /// Group buttons + the 4x3 pads, laid out like the KO II keypad.
     fn pad_grid(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
+            ui.strong("Pads");
+            ui.add_space(8.0);
             ui.label("Group");
             for (g, name) in GROUPS.iter().enumerate() {
                 ui.selectable_value(&mut self.group, g, *name);
@@ -266,7 +461,7 @@ impl KoiiApp {
         });
         ui.add_space(8.0);
 
-        let pad_size = egui::vec2(120.0, 84.0);
+        let pad_size = egui::vec2(120.0, 66.0);
         let mut down_now: Option<u8> = None;
         egui::Grid::new("pad_grid")
             .spacing(egui::vec2(10.0, 10.0))
@@ -276,7 +471,13 @@ impl KoiiApp {
                         let p = row * 3 + col;
                         let info = self.pad_map.pad(self.group, p);
                         let name = if info.name.is_empty() { "—" } else { info.name.as_str() };
-                        let text = egui::RichText::new(format!("{}\n{}", PAD_LABELS[p], name));
+                        let here = PadRef { group: self.group, pad: p };
+                        let role = DRUMS
+                            .iter()
+                            .find(|d| self.pad_map.drums[**d as usize] == Some(here))
+                            .map(|d| format!("\n[{}]", d.name()))
+                            .unwrap_or_default();
+                        let text = egui::RichText::new(format!("{}\n{}{role}", PAD_LABELS[p], name));
                         let resp = ui.add_sized(
                             pad_size,
                             egui::Button::new(text)
@@ -305,7 +506,7 @@ impl KoiiApp {
 
         ui.add_space(6.0);
         ui.weak(if self.connected() {
-            "Press a pad to hear it on the KO II."
+            "Press a pad to hear it. Pick a pad to use it in the beat."
         } else {
             "Plug in the KO II with a USB-C cable to hear the pads."
         });
@@ -359,6 +560,30 @@ impl KoiiApp {
             save = edit.lost_focus();
         });
         if save {
+            self.save_pad_map();
+        }
+        let here = PadRef { group, pad: p };
+        let current = DRUMS.iter().copied().find(|d| self.pad_map.drums[*d as usize] == Some(here));
+        let mut choice = current;
+        ui.horizontal(|ui| {
+            ui.label("Use in beat as");
+            egui::ComboBox::from_id_salt("pad_role")
+                .selected_text(choice.map(|d| d.name()).unwrap_or("Not used"))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut choice, None, "Not used");
+                    for d in DRUMS {
+                        ui.selectable_value(&mut choice, Some(d), d.name());
+                    }
+                });
+        });
+        if choice != current {
+            if let Some(old) = current {
+                self.pad_map.drums[old as usize] = None;
+            }
+            if let Some(new) = choice {
+                self.pad_map.drums[new as usize] = Some(here);
+            }
+            self.sync_drum_notes();
             self.save_pad_map();
         }
         let pad = self.pad_map.pad(group, p);

@@ -19,7 +19,9 @@ Tests: `cargo test`
 - `src/main.rs`: window, pad grid, "How do I…?" card
 - `src/ko2.rs`: USB MIDI thread (pad notes, read-only "Read pads")
 - `src/sysex.rs`: TE SysEx framing (packed7, request/reply)
-- `src/pads.rs`: pad layout, MIDI notes, saved pad map
+- `src/pads.rs`: pad layout, MIDI notes, saved pad map, drum pad picks
+- `src/beat.rs`: lo-fi beat maker (styles, ghost notes, fills, swing timing)
+- `src/drummer.rs`: timer thread that plays the beat as MIDI notes
 
 ## Phases
 
@@ -27,7 +29,7 @@ Tests: `cargo test`
 |---|---|---|
 | 0 | Project setup, empty window, size limits (min 960x620, start 1200x760, max 1600x1000), "How do I…?" card shell: a separate borderless window docked to the right edge (left if no room), Winamp-style; main window never resizes | done |
 | 1 | Connect to KO II over USB-C, "Read pads from KO II" (read-only), tap a pad to hear it, remember the pad map (`%APPDATA%\koii-ep133\pad-map.json`) | done (tested on KO II, OS 2.5.1) |
-| 2 | Lo-fi / hip-hop drummer: Play/Stop, Tempo, Swing, New beat, fills, 16-step view | next |
+| 2 | Lo-fi / hip-hop drummer: Play/Stop, Tempo, Swing, Style, New beat, fill on bar 4, 16-step view; drum pads picked from sound names | built, not yet heard on KO II |
 | 3 | "How do I…?" right-side panel: search by goal, step-by-step with buttons lit on a KO II drawing | |
 | 4 | Bass + melody locked to one key | |
 | 5 | Keep / Skip, song library, export MIDI file | |
