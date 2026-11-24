@@ -22,6 +22,9 @@ Tests: `cargo test`
 - `src/pads.rs`: pad layout, MIDI notes, saved pad map, drum pad picks
 - `src/beat.rs`: lo-fi beat maker (styles, ghost notes, fills, swing timing)
 - `src/drummer.rs`: timer thread that plays the beat as MIDI notes
+- `src/howto.rs`: "How do I…?" answers (button steps from the TE guide) and search
+- `src/help.rs`: "How do I…?" card screen and the KO II button drawing
+- `src/settings.rs`: saved app settings (text size) in `%APPDATA%\koii-ep133\settings.json`
 
 ## Phases
 
@@ -30,7 +33,7 @@ Tests: `cargo test`
 | 0 | Project setup, empty window, size limits (min 960x620, start 1200x760, max 1600x1000), "How do I…?" card shell: a separate borderless window docked to the right edge (left if no room), Winamp-style; main window never resizes | done |
 | 1 | Connect to KO II over USB-C, "Read pads from KO II" (read-only), tap a pad to hear it, remember the pad map (`%APPDATA%\koii-ep133\pad-map.json`) | done (tested on KO II, OS 2.5.1) |
 | 2 | Lo-fi / hip-hop drummer: Play/Stop, Tempo, Swing, Style, New beat, fill on bar 4, 16-step view; drum pads picked from sound names | done (tested on KO II) |
-| 3 | "How do I…?" right-side panel: search by goal, step-by-step with buttons lit on a KO II drawing | |
+| 3 | "How do I…?" card: search by goal (Thai words OK), 8 most-used, 23 answers from the TE guide, step-by-step with buttons lit on a KO II drawing laid out like the real device, link to Joey's cheat sheet; Text size setting (4 sizes, card grows with it); beat strip pinned above a bottom status bar | done (MVP) |
 | 4 | Bass + melody locked to one key | |
 | 5 | Keep / Skip, song library, export MIDI file | |
 | 6 | You play, the app fills in the rest | |

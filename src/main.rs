@@ -3,8 +3,11 @@
 
 mod beat;
 mod drummer;
+mod help;
+mod howto;
 mod ko2;
 mod pads;
+mod settings;
 mod sysex;
 
 use beat::{DRUMS, STEPS, STYLES, Style};
@@ -18,8 +21,15 @@ const START_SIZE: [f32; 2] = [1200.0, 760.0];
 const MIN_SIZE: [f32; 2] = [960.0, 620.0];
 const MAX_SIZE: [f32; 2] = [1600.0, 1000.0];
 
-// Width of the "How do I…?" card.
-const HELP_CARD_WIDTH: f32 = 300.0;
+// Width of the "How do I…?" card at normal text size. It grows with the Text size setting.
+const HELP_CARD_WIDTH: f32 = 400.0;
+
+/// Card width for the current text size.
+fn help_card_width(ctx: &egui::Context) -> f32 {
+    let now = ctx.global_style().text_styles[&egui::TextStyle::Body].size;
+    let normal = egui::Style::default().text_styles[&egui::TextStyle::Body].size;
+    HELP_CARD_WIDTH * now / normal
+}
 // Windows 10/11 adds an invisible border (left, right, bottom) around normal windows, in points.
 const WINDOW_INVISIBLE_BORDER: f32 = 8.0;
 
@@ -38,6 +48,23 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| Ok(Box::new(KoiiApp::new(&cc.egui_ctx)))),
     )
+}
+
+/// egui's built-in fonts have no Thai letters, so Thai search words showed as boxes.
+/// Use Windows' own Thai font (Leelawadee UI) as a fallback. No font file is shipped.
+fn add_thai_font(ctx: &egui::Context) {
+    let windir = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".into());
+    let Ok(bytes) = std::fs::read(format!("{windir}\\Fonts\\LeelawUI.ttf")) else {
+        return; // no Thai font: Thai shows as boxes, everything else still works
+    };
+    let mut fonts = egui::FontDefinitions::default();
+    fonts
+        .font_data
+        .insert("thai".into(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts.families.entry(family).or_default().push("thai".into());
+    }
+    ctx.set_fonts(fonts);
 }
 
 /// USB connection state shown in the top bar.
@@ -79,11 +106,16 @@ struct KoiiApp {
 
     drummer: Drummer,
     style: Style,
+    help: help::HelpState,
+    settings: settings::Settings,
 }
 
 impl KoiiApp {
     fn new(ctx: &egui::Context) -> Self {
         ctx.set_theme(egui::Theme::Dark);
+        add_thai_font(ctx);
+        let settings = settings::Settings::load();
+        settings.apply_text_size(ctx);
         let ko2 = Ko2::start(ctx.clone());
         let mut pad_map = PadMap::load();
         pad_map.auto_pick_drums();
@@ -107,6 +139,8 @@ impl KoiiApp {
             ko2,
             drummer,
             style,
+            help: help::HelpState::default(),
+            settings,
             link: Link::NotConnected,
             pad_map,
             group: 0,
@@ -218,8 +252,9 @@ fn choose_card_side(ctx: &egui::Context) -> CardSide {
     let (Some(outer), Some(monitor)) = (info.outer_rect, info.monitor_size) else {
         return CardSide::Right;
     };
-    let right_fits = outer.max.x - WINDOW_INVISIBLE_BORDER + HELP_CARD_WIDTH <= monitor.x;
-    let left_fits = outer.min.x + WINDOW_INVISIBLE_BORDER - HELP_CARD_WIDTH >= 0.0;
+    let card_w = help_card_width(ctx);
+    let right_fits = outer.max.x - WINDOW_INVISIBLE_BORDER + card_w <= monitor.x;
+    let left_fits = outer.min.x + WINDOW_INVISIBLE_BORDER - card_w >= 0.0;
     if right_fits {
         CardSide::Right
     } else if left_fits {
@@ -230,28 +265,14 @@ fn choose_card_side(ctx: &egui::Context) -> CardSide {
 }
 
 /// Where the card window goes, glued to the visible edge of the main window.
-fn card_rect(main_outer: egui::Rect, side: CardSide) -> egui::Rect {
+fn card_rect(main_outer: egui::Rect, side: CardSide, card_w: f32) -> egui::Rect {
     let top = main_outer.min.y;
     let height = main_outer.height() - WINDOW_INVISIBLE_BORDER;
     let left = match side {
         CardSide::Right | CardSide::Inside => main_outer.max.x - WINDOW_INVISIBLE_BORDER,
-        CardSide::Left => main_outer.min.x + WINDOW_INVISIBLE_BORDER - HELP_CARD_WIDTH,
+        CardSide::Left => main_outer.min.x + WINDOW_INVISIBLE_BORDER - card_w,
     };
-    egui::Rect::from_min_size(egui::pos2(left, top), egui::vec2(HELP_CARD_WIDTH, height))
-}
-
-/// What goes inside the help card.
-fn help_contents(ui: &mut egui::Ui, close_clicked: &mut bool) {
-    ui.horizontal(|ui| {
-        ui.strong("How do I…?");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("✕").clicked() {
-                *close_clicked = true;
-            }
-        });
-    });
-    ui.separator();
-    ui.label("Step-by-step button help comes in Phase 3.");
+    egui::Rect::from_min_size(egui::pos2(left, top), egui::vec2(card_w, height))
 }
 
 impl eframe::App for KoiiApp {
@@ -273,6 +294,8 @@ impl eframe::App for KoiiApp {
                     }
                     ui.separator();
                     self.link_status(ui);
+                    ui.separator();
+                    self.text_size_picker(ui);
                 });
             });
         });
@@ -280,27 +303,84 @@ impl eframe::App for KoiiApp {
             self.toggle_help(&ctx);
         }
 
-        // Main area.
-        let main_area = egui::CentralPanel::default_margins().show(ui, |ui| {
-            ui.horizontal_top(|ui| {
-                ui.vertical(|ui| self.pad_grid(ui));
-                ui.add_space(24.0);
-                ui.vertical(|ui| {
-                    self.controls(ui);
-                    ui.add_space(14.0);
-                    self.side_box(ui);
-                });
-            });
-            ui.add_space(14.0);
-            ui.separator();
-            self.beat_view(ui);
+        // Status bar at the very bottom (room for more status later).
+        let status_area = egui::Panel::bottom("status_bar").show(ui, |ui| {
+            ui.add_space(2.0);
+            self.status_bar(ui);
+            ui.add_space(2.0);
         });
 
-        self.show_help_card(&ctx, main_area.response.rect);
+        // Beat strip pinned above the status bar, so it never hides when the window is small.
+        let beat_area = egui::Panel::bottom("beat_strip").show(ui, |ui| {
+            ui.add_space(8.0);
+            self.beat_view(ui);
+            ui.add_space(14.0);
+        });
+        let beat_area_rect = beat_area.response.rect.union(status_area.response.rect);
+
+        // Main area: scrolls if the window is too small for it.
+        let main_area = egui::CentralPanel::default_margins().show(ui, |ui| {
+            egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
+                ui.horizontal_top(|ui| {
+                    ui.vertical(|ui| self.pad_grid(ui));
+                    ui.add_space(24.0);
+                    ui.vertical(|ui| {
+                        self.controls(ui);
+                        ui.add_space(14.0);
+                        self.side_box(ui);
+                    });
+                });
+            });
+        });
+
+        let below_top_bar = main_area.response.rect.union(beat_area_rect);
+        self.show_help_card(&ctx, below_top_bar);
     }
 }
 
 impl KoiiApp {
+    /// Bottom line: what the app knows right now. Later phases can add more here.
+    fn status_bar(&self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let link = match &self.link {
+                Link::Connected(port) => format!("KO II connected ({port})"),
+                Link::Busy(_) => "KO II busy: another app is using it".to_string(),
+                Link::NotConnected => "KO II not connected".to_string(),
+            };
+            ui.weak(link);
+            if let Some(project) = self.pad_map.project {
+                ui.separator();
+                ui.weak(format!("Project {project}"));
+            }
+            if let Some(v) = &self.os_version {
+                ui.separator();
+                ui.weak(format!("OS {v}"));
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let s = self.drummer.get();
+                let state = if s.playing { "Playing" } else { "Stopped" };
+                ui.weak(format!("{state} · {} · {:.0} BPM · swing {:.0}%", self.style.name(), s.bpm, s.swing));
+            });
+        });
+    }
+
+    /// "Text size" choice in the top bar (4 sizes, saved).
+    fn text_size_picker(&mut self, ui: &mut egui::Ui) {
+        let mut size = self.settings.text_size;
+        egui::ComboBox::from_id_salt("text_size")
+            .selected_text(format!("Text: {}", settings::TEXT_SIZES[size].0))
+            .show_ui(ui, |ui| {
+                for (i, (name, _)) in settings::TEXT_SIZES.iter().enumerate() {
+                    ui.selectable_value(&mut size, i, *name);
+                }
+            });
+        if size != self.settings.text_size {
+            self.settings.text_size = size;
+            self.settings.apply_text_size(ui.ctx());
+            self.settings.save();
+        }
+    }
+
     fn link_status(&self, ui: &mut egui::Ui) {
         let (dot, text) = match &self.link {
             Link::Connected(_) => (egui::Color32::from_rgb(80, 200, 120), "KO II connected"),
@@ -321,7 +401,7 @@ impl KoiiApp {
         ui.strong("Controls");
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            let size = egui::vec2(140.0, 34.0);
+            let size = egui::vec2(140.0, 34.0) * help::text_scale(ui);
             if ui
                 .add_sized(size, egui::Button::new("▶  Play").selected(s.playing))
                 .clicked()
@@ -388,7 +468,7 @@ impl KoiiApp {
             });
         ui.add_space(8.0);
         if ui
-            .add_sized(egui::vec2(290.0, 34.0), egui::Button::new("🎲  New beat"))
+            .add_sized(egui::vec2(290.0, 34.0) * help::text_scale(ui), egui::Button::new("🎲  New beat"))
             .clicked()
         {
             s.beat = beat::new_beat(self.style);
@@ -422,40 +502,48 @@ impl KoiiApp {
         ui.strong(title);
         ui.add_space(4.0);
         let pattern = if showing_fill { &s.beat.fill } else { &s.beat.main };
-        let label_w = 60.0;
-        let gap = 4.0;
-        let cell_w = ((ui.available_width() - label_w - gap * 16.0 - 12.0) / 16.0).clamp(20.0, 56.0);
-        let cell = egui::vec2(cell_w, 22.0);
+        // Drawn by hand inside the width we have, so all 16 steps always fit.
+        let scale = help::text_scale(ui);
+        let label_w = 60.0 * scale;
+        let gap = 4.0; // between steps
+        let beat_gap = 8.0; // extra space every 4 steps
+        let row_h = 22.0 * scale;
+        let width = ui.available_width();
+        let cell_w = ((width - label_w - gap * 15.0 - beat_gap * 3.0) / 16.0).clamp(8.0, 56.0);
+        let (area, _) = ui.allocate_exact_size(
+            egui::vec2(width, row_h * 3.0 + gap * 2.0),
+            egui::Sense::hover(),
+        );
+        let painter = ui.painter_at(area);
         let visuals = ui.visuals().clone();
         let hit_color = egui::Color32::from_rgb(200, 200, 190);
         let play_color = egui::Color32::from_rgb(90, 150, 230);
+        let font = egui::TextStyle::Body.resolve(ui.style());
         // Hat on top, Kick at the bottom (like the wireframe).
-        for &drum in DRUMS.iter().rev() {
-            ui.horizontal(|ui| {
-                ui.add_sized(egui::vec2(label_w, cell.y), egui::Label::new(drum.name()));
-                for step in 0..STEPS {
-                    if step > 0 && step % 4 == 0 {
-                        ui.add_space(gap);
-                    }
-                    let (rect, _) = ui.allocate_exact_size(cell, egui::Sense::hover());
-                    let v = pattern[drum as usize][step];
-                    let fill = if v == 0 {
-                        visuals.extreme_bg_color
-                    } else {
-                        // Quiet hits (ghost notes) look dimmer.
-                        hit_color.gamma_multiply(0.35 + 0.65 * v as f32 / 127.0)
-                    };
-                    ui.painter().rect_filled(rect, 3.0, fill);
-                    if pos.map(|(_, st)| st) == Some(step) {
-                        ui.painter().rect_stroke(
-                            rect,
-                            3.0,
-                            egui::Stroke::new(2.0, play_color),
-                            egui::StrokeKind::Inside,
-                        );
-                    }
+        for (row, &drum) in DRUMS.iter().rev().enumerate() {
+            let y = area.min.y + row as f32 * (row_h + gap);
+            painter.text(
+                egui::pos2(area.min.x + label_w - 8.0, y + row_h / 2.0),
+                egui::Align2::RIGHT_CENTER,
+                drum.name(),
+                font.clone(),
+                visuals.text_color(),
+            );
+            for step in 0..STEPS {
+                let x = area.min.x + label_w + step as f32 * (cell_w + gap) + (step / 4) as f32 * beat_gap;
+                let rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(cell_w, row_h));
+                let v = pattern[drum as usize][step];
+                let fill = if v == 0 {
+                    visuals.extreme_bg_color
+                } else {
+                    // Quiet hits (ghost notes) look dimmer.
+                    hit_color.gamma_multiply(0.35 + 0.65 * v as f32 / 127.0)
+                };
+                painter.rect_filled(rect, 3.0, fill);
+                if pos.map(|(_, st)| st) == Some(step) {
+                    painter.rect_stroke(rect, 3.0, egui::Stroke::new(2.0, play_color), egui::StrokeKind::Inside);
                 }
-            });
+            }
         }
     }
 
@@ -471,7 +559,7 @@ impl KoiiApp {
         });
         ui.add_space(8.0);
 
-        let pad_size = egui::vec2(120.0, 66.0);
+        let pad_size = egui::vec2(120.0, 66.0) * help::text_scale(ui);
         let mut down_now: Option<u8> = None;
         egui::Grid::new("pad_grid")
             .spacing(egui::vec2(10.0, 10.0))
@@ -524,7 +612,7 @@ impl KoiiApp {
 
     /// Right of the pads: read button and the picked pad's details.
     fn side_box(&mut self, ui: &mut egui::Ui) {
-        ui.set_width(300.0);
+        ui.set_width(300.0 * help::text_scale(ui));
         ui.strong("Pad sounds");
         ui.add_space(4.0);
         let can_read = self.connected() && !self.reading;
@@ -626,7 +714,7 @@ impl KoiiApp {
             }
         }
         let inside = self.card_side == CardSide::Inside;
-        let rect = card_rect(main_outer, self.card_side);
+        let rect = card_rect(main_outer, self.card_side, help_card_width(ctx));
 
         let mut close_clicked = false;
         if self.help_open && inside {
@@ -644,6 +732,7 @@ impl KoiiApp {
             .with_inner_size(rect.size());
 
         let side = self.card_side;
+        let help = &mut self.help;
         let mut card_closed_by_os = false;
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("help_card"),
@@ -667,7 +756,7 @@ impl KoiiApp {
                         area.y_range(),
                         ui.visuals().widgets.noninteractive.bg_stroke,
                     );
-                    help_contents(ui, &mut close_clicked);
+                    help.show(ui, &mut close_clicked);
                 });
             },
         );
@@ -679,9 +768,9 @@ impl KoiiApp {
 
     /// Full screen: the card lies on top of the right edge of the main area.
     /// Nothing underneath moves; it is just covered while the card is open.
-    fn show_inside_card(&self, ctx: &egui::Context, main_area: egui::Rect, close_clicked: &mut bool) {
+    fn show_inside_card(&mut self, ctx: &egui::Context, main_area: egui::Rect, close_clicked: &mut bool) {
         let rect = egui::Rect::from_min_max(
-            egui::pos2(main_area.max.x - HELP_CARD_WIDTH, main_area.min.y),
+            egui::pos2(main_area.max.x - help_card_width(ctx), main_area.min.y),
             main_area.max,
         );
         egui::Area::new(egui::Id::unique("help_card_inside"))
@@ -696,7 +785,8 @@ impl KoiiApp {
                     .show(ui, |ui| {
                         ui.set_min_size(rect.size() - egui::vec2(16.0, 16.0));
                         ui.set_max_width(rect.width() - 16.0);
-                        help_contents(ui, close_clicked);
+                        ui.set_max_height(rect.height() - 16.0);
+                        self.help.show(ui, close_clicked);
                     });
             });
     }
