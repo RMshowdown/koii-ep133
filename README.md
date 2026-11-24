@@ -34,11 +34,21 @@ Tests: `cargo test`
 | 1 | Connect to KO II over USB-C, "Read pads from KO II" (read-only), tap a pad to hear it, remember the pad map (`%APPDATA%\koii-ep133\pad-map.json`) | done (tested on KO II, OS 2.5.1) |
 | 2 | Lo-fi / hip-hop drummer: Play/Stop, Tempo, Swing, Style, New beat, fill on bar 4, 16-step view; drum pads picked from sound names | done (tested on KO II) |
 | 3 | "How do I…?" card: search by goal (Thai words OK), 8 most-used, 23 answers from the TE guide, step-by-step with buttons lit on a KO II drawing laid out like the real device, link to Joey's cheat sheet; Text size setting (4 sizes, card grows with it); beat strip pinned above a bottom status bar | done (MVP) |
-| 4 | Bass + melody locked to one key | |
+| 4 | Bass + melody | on hold: owner picking a way (see TODO.md and "KO II limits" below) |
 | 5 | Keep / Skip, song library, export MIDI file | |
 | 6 | You play, the app fills in the rest | |
 | 7 | Make it pretty; Settings: help panel on left or right | |
 | 8 | Optional, risky: write songs into a KO II project (backup first) | |
+
+Open tasks and ideas: [TODO.md](TODO.md).
+
+## KO II limits found by testing (owner's KO II, OS 2.5.1, 2026-11-24)
+
+- Incoming MIDI notes 36-83 play pads A-D (official guide). The channel set per pad in sound edit (MIDI page, KNOB X) did NOT route notes: notes on channel 2 still played the normal pad for that note number.
+- With KEYS on, incoming notes play the picked pad up and down in pitch, but then every note does that, so the drums stop working.
+- No MIDI or known SysEx command presses KEYS (or any other button) for us.
+- So drums plus a bass that changes pitch cannot both come from KO II pads over MIDI at the same time.
+- Pad reads (METADATA GET `sym`) worked on this firmware: 36 of 48 pads read in project 2.
 
 ## Rules for this project
 
