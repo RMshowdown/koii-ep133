@@ -6,6 +6,8 @@ and shows step-by-step button help for people new to the device. (It was called 
 
 Not affiliated with Teenage Engineering.
 
+> **Status: paused (2026-11-25).** Phases 0-3 work and Phase 7 is part done. Work stopped before Phase 4 (bass + melody) because it needs a lot of music detail. Where we stopped and what to do next: [TODO.md](TODO.md).
+
 The side card with KO II button steps is called **Button Guide** (it was "How do I…?").
 
 ## Run it
@@ -40,7 +42,7 @@ Tests: `cargo test`
 | 1 | Connect to KO II over USB-C, "Read pads from KO II" (read-only), tap a pad to hear it, remember the pad map (`%APPDATA%\koii-ep133\pad-map.json`) | done (tested on KO II, OS 2.5.1) |
 | 2 | Lo-fi / hip-hop drummer: Play/Stop, Tempo, Swing, Style, New beat, fill on bar 4, 16-step view; drum pads picked from sound names | done (tested on KO II) |
 | 3 | "How do I…?" card: search by goal (Thai words OK), 8 most-used, 23 answers from the TE guide, step-by-step with buttons lit on a KO II drawing laid out like the real device, link to Joey's cheat sheet; Text size setting (4 sizes, card grows with it); beat strip pinned above a bottom status bar | done (MVP) |
-| 4 | Bass + melody | on hold: owner picking a way (see TODO.md and "KO II limits" below) |
+| 4 | Bass + melody | paused: owner picking a way (see TODO.md and "KO II limits" below). Found: the KO II records the app's notes |
 | 5 | Keep / Skip, song library, export MIDI file | |
 | 6 | You play, the app fills in the rest | |
 | 7 | Make it pretty; Settings: help panel on left or right | started: Settings window (7 themes, text size), beat screen on top, full KO II panel (every button, lit when pressed), knobs for VOL/BPM/Swing, loop length 4/8/16 bars, follows KO II pad and group presses, connection status in the bottom bar, new fonts, Settings "KO II" part (OS version, check for update, buttons that let go of the KO II and open TE's update tool or EP Sample Tool, Reconnect, format steps). Still to do: card side choice, owner's look list |
@@ -60,6 +62,7 @@ Open tasks and ideas: [TODO.md](TODO.md).
   - A pad set to another MIDI channel (sound edit, MIDI page) sends that channel and its own note instead (seen: group B pads 2 and 3 left on channel 2 from the Phase 4 test sent channel 2 notes 36 and 35). So the app follows the `active` pad event, not note numbers. Pad metadata has `midi.channel` (0 on normal pads); "Read pads" marks pads with a different value in orange.
   - Group A-D press: metadata event on the project's groups folder (e.g. file 4100 `active` 4200-4500).
   - Changing the sound on a pad (sound edit): metadata event `sym` = new sample slot, and `sample.end`.
+  - Recording: with group A selected, RECORD + PLAY on the KO II records the notes the app sends into the pattern. On playback the KO II plays at its own tempo (not the app's) and sends every hit out as channel 1 note 60.
   - VOL / X / Y knobs, SOUND, MAIN, TEMPO, KEYS, FADER, SHIFT, SAMPLE, TIMING, FX, ERASE, -, +, RECORD: nothing is sent, so the app cannot follow them. Twice an "all sound off" (channel 2, CC 120) came in, button unknown.
 
 ## If the KO II stops showing up
