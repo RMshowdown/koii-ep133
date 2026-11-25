@@ -27,6 +27,7 @@ Tests: `cargo test`
 - `src/howto.rs`: Button Guide answers (button steps from the TE guide) and search
 - `src/help.rs`: Button Guide card screen and the KO II button drawing
 - `src/settings.rs`: saved app settings (theme, text size) in `%APPDATA%\koii-ep133\settings.json`
+- `src/update.rs`: "Check for update": reads TE's public what's-new page and compares the newest OS with the KO II's OS; links to TE's update tool and EP Sample Tool
 - `src/theme.rs`: 7 colour themes, app fonts, card/button drawing helpers
 - `assets/fonts/`: Familjen Grotesk + Noto Sans Thai (free, SIL Open Font License, licence files next to them)
 - `designs/`: HTML mock-ups the themes came from (not used by the app)
@@ -42,7 +43,7 @@ Tests: `cargo test`
 | 4 | Bass + melody | on hold: owner picking a way (see TODO.md and "KO II limits" below) |
 | 5 | Keep / Skip, song library, export MIDI file | |
 | 6 | You play, the app fills in the rest | |
-| 7 | Make it pretty; Settings: help panel on left or right | started: Settings window (7 themes, text size), beat screen on top, full KO II panel (every button, lit when pressed), knobs for VOL/BPM/Swing, loop length 4/8/16 bars, follows KO II pad and group presses, connection status in the bottom bar, new fonts. Still to do: card side choice, owner's look list |
+| 7 | Make it pretty; Settings: help panel on left or right | started: Settings window (7 themes, text size), beat screen on top, full KO II panel (every button, lit when pressed), knobs for VOL/BPM/Swing, loop length 4/8/16 bars, follows KO II pad and group presses, connection status in the bottom bar, new fonts, Settings "KO II" part (OS version, check for update, links to TE update tool and EP Sample Tool, format steps). Still to do: card side choice, owner's look list |
 | 8 | Optional, risky: write songs into a KO II project (backup first) | |
 
 Open tasks and ideas: [TODO.md](TODO.md).
@@ -63,7 +64,7 @@ Open tasks and ideas: [TODO.md](TODO.md).
 ## Rules for this project
 
 - Owner is not a programmer: explain in simple Thai, one step at a time.
-- Ask before adding libraries or tools. Current libraries: `eframe` (window), `midir` (MIDI), `rand`, `serde` + `serde_json` (save settings). Fonts are files, not libraries.
+- Ask before adding libraries or tools. Current libraries: `eframe` (window), `midir` (MIDI), `rand`, `serde` + `serde_json` (save settings), `ureq` (reads one TE web page for "Check for update"). Fonts are files, not libraries.
 - Never guess KO II facts. Check the official guide first: https://teenage.engineering/guides/ep-133
 - Talking to the KO II beyond normal MIDI notes uses an undocumented SysEx protocol.
   Read-only messages only (METADATA GET / list). Never write, upload or delete on the device unless the owner agrees for that exact step.
@@ -71,4 +72,5 @@ Open tasks and ideas: [TODO.md](TODO.md).
 - Do not copy code from AGPL projects (for example ep133-export-to-daw).
 - Button help text comes from the official TE guide. Link to https://ep133.joeyh.org/ for the full cheat sheet; do not copy its content.
 - App text is English, short and plain. No Thai on app screens; Thai words still work in the Button Guide search.
+- Internet: only "Check for update" reads https://teenage.engineering/guides/ep-133/whats-new. Firmware update, backup, restore and format are done with TE's own tools or on the device; the app only links to them and shows the steps.
 - Never commit or push; suggest a commit message instead (`type(scope): summary`, no Co-Authored-By line).

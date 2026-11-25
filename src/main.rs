@@ -10,6 +10,7 @@ mod pads;
 mod settings;
 mod sysex;
 mod theme;
+mod update;
 
 use beat::{DRUMS, STEPS, STYLES, Style};
 use drummer::{Drummer, LOOP_CHOICES};
@@ -64,6 +65,14 @@ enum Link {
     Busy(String),
 }
 
+/// "Check for update" in Settings.
+enum UpdateCheck {
+    NotChecked,
+    Checking(std::sync::mpsc::Receiver<Result<String, String>>),
+    /// Newest OS on TE's page, or why we could not tell.
+    Done(Result<String, String>),
+}
+
 /// Which side of the main window the help card sticks to.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 enum CardSide {
@@ -93,6 +102,8 @@ struct KoiiApp {
     device_held: Vec<u8>,
     /// Last thing the KO II sent, in words (status bar).
     last_from_device: Option<String>,
+    /// Settings: newest KO II OS check.
+    update_check: UpdateCheck,
     /// Sound names by sample slot, from the last "Read pads".
     sound_names: std::collections::HashMap<u16, String>,
     reading: bool,
@@ -154,6 +165,7 @@ impl KoiiApp {
             device_held: Vec::new(),
             last_from_device: None,
             sound_names: std::collections::HashMap::new(),
+            update_check: UpdateCheck::NotChecked,
             reading: false,
             read_message: String::new(),
             os_version: None,
@@ -181,13 +193,18 @@ impl KoiiApp {
                     }
                 }
                 Event::Busy(msg) => self.link = Link::Busy(msg),
-                Event::ReadProgress(msg) => self.read_message = msg,
+                Event::ReadProgress(msg) => {
+                    self.read_message = msg;
+                    self.last_from_device = None;
+                }
                 Event::ReadFailed(msg) => {
                     self.reading = false;
+                    self.last_from_device = None;
                     self.read_message = msg;
                 }
                 Event::ReadDone(result) => {
                     self.reading = false;
+                    self.last_from_device = None;
                     self.os_version = result.os_version.clone();
                     self.apply_read(result);
                 }
@@ -202,6 +219,7 @@ impl KoiiApp {
                 }
                 Event::DeviceGroup(group) => self.group = group,
                 Event::DeviceMessage(text) => self.last_from_device = Some(text),
+                Event::OsVersion(v) => self.os_version = Some(v),
                 Event::DevicePadSound { project, pad, slot } => self.device_pad_sound(project, pad, slot),
             }
         }
@@ -389,42 +407,43 @@ impl KoiiApp {
     /// Bottom line: connection (with a dot), project, read news; beat state on the right.
     fn status_bar(&self, ui: &mut egui::Ui) {
         let t = theme::current();
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            let (dot, text, color) = match &self.link {
-                Link::Connected(port) => (egui::Color32::from_rgb(80, 190, 120), format!("KO II connected ({port})"), t.soft),
-                Link::Busy(_) => (
-                    t.warn,
-                    "No sound: another app is using the KO II. Close other copies of this app or the TE web tool.".to_string(),
-                    t.warn,
-                ),
-                Link::NotConnected => (t.warn, "KO II not connected: plug it in with USB-C to hear sound".to_string(), t.warn),
-            };
-            ui.colored_label(dot, "●");
-            let resp = ui.colored_label(color, text);
-            if let Link::Busy(msg) = &self.link {
-                resp.on_hover_text(msg.as_str());
-            }
-            if let Some(project) = self.pad_map.project {
-                ui.weak("·");
-                ui.weak(format!("Project {project}"));
-            }
-            if let Some(v) = &self.os_version {
-                ui.weak("·");
-                ui.weak(format!("OS {v}"));
-            }
-            if !self.read_message.is_empty() {
-                ui.weak("·");
-                ui.weak(&self.read_message);
-            }
-            if let Some(msg) = &self.last_from_device {
-                ui.weak("·");
-                ui.weak(format!("From KO II: {msg}"));
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let s = self.drummer.get();
-                let state = if s.playing { "Playing" } else { "Stopped" };
-                ui.weak(format!("{state} · {} · {:.0} BPM · swing {:.0}%", self.style.name(), s.bpm, s.swing));
+        let (dot, link, color) = match &self.link {
+            Link::Connected(_) => (egui::Color32::from_rgb(80, 190, 120), "KO II connected", t.soft),
+            Link::Busy(_) => (t.warn, "No sound: another app is using the KO II", t.warn),
+            Link::NotConnected => (t.warn, "KO II not connected: plug it in with USB-C", t.warn),
+        };
+        // Left text: connection, project, OS, then the newest news (KO II or "Read pads").
+        let mut left = link.to_string();
+        if let Some(project) = self.pad_map.project {
+            left += &format!("  ·  Project {project}");
+        }
+        if let Some(v) = &self.os_version {
+            left += &format!("  ·  OS {v}");
+        }
+        let news = match &self.last_from_device {
+            Some(msg) => format!("From KO II: {msg}"),
+            None => self.read_message.clone(),
+        };
+        if !news.is_empty() {
+            left += &format!("  ·  {news}");
+        }
+        let full = match &self.link {
+            Link::Connected(port) | Link::Busy(port) => format!("{left}
+{port}"),
+            Link::NotConnected => left.clone(),
+        };
+
+        // Right side first, so the left text gets the room that is left and is cut with "…".
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let s = self.drummer.get();
+            let state = if s.playing { "Playing" } else { "Stopped" };
+            ui.weak(format!("{state} · {} · {:.0} BPM · swing {:.0}%", self.style.name(), s.bpm, s.swing));
+            ui.add_space(16.0);
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.colored_label(dot, "●");
+                ui.add(egui::Label::new(egui::RichText::new(left).color(color)).truncate())
+                    .on_hover_text(full);
             });
         });
     }
@@ -437,6 +456,13 @@ impl KoiiApp {
         let mut done = false;
         let mut picked_theme = self.settings.theme;
         let mut picked_size = self.settings.text_size;
+        let mut check_clicked = false;
+        if let UpdateCheck::Checking(rx) = &self.update_check {
+            if let Ok(result) = rx.try_recv() {
+                self.update_check = UpdateCheck::Done(result);
+            }
+        }
+        let max_h = (ctx.content_rect().height() - 150.0).max(200.0);
         let t = theme::current();
         let frame = egui::Frame::new()
             .fill(t.popup)
@@ -455,20 +481,26 @@ impl KoiiApp {
                 });
             });
             ui.add_space(10.0);
-            ui.strong("Theme");
-            ui.add_space(4.0);
-            for (i, t) in theme::THEMES.iter().enumerate() {
-                if theme_row(ui, t, i == picked_theme).clicked() {
-                    picked_theme = i;
+            egui::ScrollArea::vertical().max_height(max_h).show(ui, |ui| {
+                ui.strong("Theme");
+                ui.add_space(4.0);
+                for (i, t) in theme::THEMES.iter().enumerate() {
+                    if theme_row(ui, t, i == picked_theme).clicked() {
+                        picked_theme = i;
+                    }
                 }
-            }
-            ui.add_space(12.0);
-            ui.strong("Text size");
-            ui.add_space(4.0);
-            ui.horizontal_wrapped(|ui| {
-                for (i, (name, _)) in settings::TEXT_SIZES.iter().enumerate() {
-                    ui.selectable_value(&mut picked_size, i, *name);
-                }
+                ui.add_space(12.0);
+                ui.strong("Text size");
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    for (i, (name, _)) in settings::TEXT_SIZES.iter().enumerate() {
+                        ui.selectable_value(&mut picked_size, i, *name);
+                    }
+                });
+                ui.add_space(16.0);
+                ui.separator();
+                ui.add_space(8.0);
+                check_clicked = self.ko2_settings(ui);
             });
             ui.add_space(14.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -478,6 +510,15 @@ impl KoiiApp {
                 }
             });
         });
+        if check_clicked && !matches!(self.update_check, UpdateCheck::Checking(_)) {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let repaint = ctx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(update::fetch_latest());
+                repaint.request_repaint();
+            });
+            self.update_check = UpdateCheck::Checking(rx);
+        }
         if picked_theme != self.settings.theme {
             self.settings.theme = picked_theme;
             theme::apply(ctx, picked_theme);
@@ -493,6 +534,64 @@ impl KoiiApp {
         if done || (!just_opened && response.should_close()) {
             self.settings_open = false;
         }
+    }
+
+    /// Settings, "KO II" part: OS version and update check, backup / restore, factory format.
+    /// Updates, backups and restores are done with TE's own web tools (safer than doing it here).
+    /// Returns true when "Check for update" was clicked.
+    fn ko2_settings(&self, ui: &mut egui::Ui) -> bool {
+        let t = theme::current();
+        let mut check_clicked = false;
+        ui.strong("KO II");
+        ui.add_space(4.0);
+
+        // OS version and update check.
+        ui.horizontal_wrapped(|ui| {
+            match &self.os_version {
+                Some(v) => ui.label(format!("OS on your KO II: {v}")),
+                None => ui.weak("OS on your KO II: plug it in to see it"),
+            };
+            let checking = matches!(self.update_check, UpdateCheck::Checking(_));
+            if ui.add_enabled(!checking, egui::Button::new("Check for update")).clicked() {
+                check_clicked = true;
+            }
+            if checking {
+                ui.spinner();
+            }
+        });
+        if let UpdateCheck::Done(result) = &self.update_check {
+            match (result, &self.os_version) {
+                (Ok(latest), Some(mine)) if update::is_newer(latest, mine) => {
+                    ui.colored_label(t.accent, format!("New OS {latest} is out. Update with TE's update tool:"));
+                }
+                (Ok(latest), Some(_)) => {
+                    ui.weak(format!("You have the newest OS (TE's page lists OS {latest})."));
+                }
+                (Ok(latest), None) => {
+                    ui.weak(format!("Newest OS on TE's page: {latest}. Plug in the KO II to compare."));
+                }
+                (Err(e), _) => {
+                    ui.colored_label(t.warn, e.as_str());
+                }
+            }
+        }
+        ui.hyperlink_to("Open TE update tool ↗", update::UPDATE_URL);
+        ui.add_space(10.0);
+
+        // Backup and restore.
+        ui.label("Backup and restore");
+        ui.weak("Use TE's EP Sample Tool (in Chrome or Edge) to back up or restore projects and sounds. Close KO II Buddy first, so the tool can reach the KO II.");
+        ui.hyperlink_to("Open EP Sample Tool ↗", update::SAMPLE_TOOL_URL);
+        ui.add_space(10.0);
+
+        // Factory format (TE guide 14.4).
+        ui.label("Format (factory clean)");
+        ui.colored_label(t.warn, "This erases ALL sounds on the KO II. Back up first.");
+        ui.weak("1. Turn the KO II off.
+2. Hold SHIFT + ERASE.
+3. Turn it on while you still hold them.");
+        ui.weak("From the TE guide, 14.4 error codes.");
+        check_clicked
     }
 
     /// The main panel, laid out like the real KO II top panel (7 columns x 5 rows):

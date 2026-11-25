@@ -54,6 +54,8 @@ pub enum Event {
     DeviceGroup(usize),
     /// The sound on a pad was changed on the KO II itself (new sample slot).
     DevicePadSound { project: u8, pad: pads::PadRef, slot: u16 },
+    /// OS version the KO II reported when it connected (GREET, read-only).
+    OsVersion(String),
     /// Any other message from the KO II, in words (shown in the status bar, also in the log file).
     DeviceMessage(String),
 }
@@ -247,9 +249,15 @@ impl Worker {
                     self.last_busy = None;
                     // FILE INIT (read-only, same as "Read pads") so the KO II tells us
                     // when a group is picked on the device. If it fails, notes still work.
+                    let os = request(&mut conn, sysex::CMD_GREET, &[])
+                        .ok()
+                        .and_then(|body| greet_value(&body, "os_version"));
                     let _ = request(&mut conn, sysex::CMD_FILE, &[0x01, 0x01, 0x00, 0x40, 0x00, 0x00]);
                     self.conn = Some(conn);
                     self.emit(Event::Connected(name));
+                    if let Some(os) = os {
+                        self.emit(Event::OsVersion(os));
+                    }
                 }
                 Err(msg) => {
                     if self.last_busy.as_deref() != Some(msg.as_str()) {
