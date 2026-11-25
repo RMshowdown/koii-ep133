@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KO II Lo-fi Drummer · Option B</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@400;500;600&family=Noto+Sans+Thai:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #FBF4EC;
+    --card: #FFFFFF;
+    --ink: #3A2F2A;
+    --soft: #8C7B70;
+    --line: #F0E2D4;
+    --accent: #D9825B;
+    --sun: #F2C58A;
+    --hat: #E9CDB0;
+    --snare: #F0B9A0;
+    --kick: #C98A6F;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--ink); font-family: "Familjen Grotesk", "Noto Sans Thai", system-ui, sans-serif; font-size: 15px; line-height: 1.5; min-height: 100vh; display: flex; flex-direction: column; }
+  button, select, input { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  header { display: flex; justify-content: space-between; align-items: center; padding: 18px 28px; }
+  .title { font-size: 19px; font-weight: 600; }
+  .title small { font-weight: 400; color: var(--soft); margin-left: 8px; }
+  .header-right { display: flex; gap: 14px; align-items: center; color: var(--soft); }
+  .status { background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px; }
+  select { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; }
+  main { display: grid; grid-template-columns: minmax(300px, 1fr) minmax(300px, 360px); gap: 22px; padding: 6px 28px 22px; flex: 1; }
+  .card { background: var(--card); border-radius: 22px; padding: 22px; border: 1px solid var(--line); }
+  .tabs { display: inline-flex; gap: 4px; background: var(--bg); padding: 4px; border-radius: 999px; margin-bottom: 16px; }
+  .tabs button { background: none; border: 0; padding: 6px 15px; border-radius: 999px; color: var(--soft); cursor: pointer; }
+  .tabs button[aria-pressed="true"] { background: var(--accent); color: #FFFFFF; }
+  .pads { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .pad { aspect-ratio: 1.4; background: #FFFDFA; border: 1px solid var(--line); border-radius: 20px; padding: 12px 14px; display: flex; flex-direction: column; justify-content: space-between; text-align: left; cursor: pointer; transition: transform 90ms ease; }
+  .pad:hover { background: #FFF8F1; }
+  .pad:active { transform: scale(.97); }
+  .pad .key { font-size: 12px; color: var(--soft); display: flex; align-items: center; gap: 6px; }
+  .pad .name { font-size: 18px; font-weight: 500; line-height: 1.15; }
+  .pad.hat .key::before, .pad.snare .key::before, .pad.kick .key::before { content: ""; width: 9px; height: 9px; border-radius: 50%; }
+  .pad.hat .key::before { background: var(--hat); }
+  .pad.snare .key::before { background: var(--snare); }
+  .pad.kick .key::before { background: var(--kick); }
+  .note { margin-top: 14px; color: var(--soft); font-size: 14px; }
+  .side { display: flex; flex-direction: column; gap: 14px; }
+  .transport { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .btn { background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 11px 14px; cursor: pointer; font-weight: 500; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #FFFFFF; }
+  .btn.wide { width: 100%; }
+  .notice { margin-top: 10px; color: var(--soft); font-size: 14px; }
+  .knob { display: grid; grid-template-columns: 64px 1fr 66px; gap: 12px; align-items: center; padding: 8px 0; }
+  .knob label, .row label { color: var(--soft); }
+  .knob output { text-align: right; font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; }
+  .check { display: inline-flex; gap: 8px; align-items: center; color: var(--ink); }
+  .check input { accent-color: var(--accent); }
+  .samples p { color: var(--soft); font-size: 14px; margin-top: 6px; }
+  footer.seq { margin: 0 28px 20px; background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 18px 22px; }
+  .seq-head { display: flex; justify-content: space-between; color: var(--soft); font-size: 14px; margin-bottom: 12px; }
+  .lane { display: grid; grid-template-columns: 56px 1fr; gap: 12px; align-items: center; margin-bottom: 8px; }
+  .lane .label { color: var(--soft); font-size: 14px; }
+  .steps { display: grid; grid-template-columns: repeat(16, 1fr); gap: 6px; }
+  .steps span { height: 24px; border-radius: 999px; background: #FAEFE4; }
+  .steps span.on.hat { background: var(--hat); }
+  .steps span.on.snare { background: var(--snare); }
+  .steps span.on.kick { background: var(--kick); }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } footer.seq { margin: 0 16px 16px; } .steps { gap: 3px; } }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="title">KO II Lo-fi Drummer <small>Project 2</small></div>
+  <div class="header-right">
+    <span class="status">KO II ยังไม่ได้เชื่อมต่อ</span>
+    <select aria-label="Text size"><option>Text: Small</option><option>Text: Large</option></select>
+    <span>วิธีใช้</span>
+  </div>
+</header>
+<main>
+  <section class="card" aria-label="Pads">
+    <div class="tabs" role="group" aria-label="Pad group">
+      <button aria-pressed="true">A</button><button aria-pressed="false">B</button><button aria-pressed="false">C</button><button aria-pressed="false">D</button>
+    </div>
+    <div class="pads">
+      <button class="pad"><span class="key">7</span><span class="name">tom fat</span></button>
+      <button class="pad"><span class="key">8</span><span class="name">ride dark</span></button>
+      <button class="pad"><span class="key">9</span><span class="name">crash</span></button>
+      <button class="pad"><span class="key">4</span><span class="name">hand drum hi</span></button>
+      <button class="pad hat"><span class="key">5</span><span class="name">closed hat lo</span></button>
+      <button class="pad"><span class="key">6</span><span class="name">open hat real</span></button>
+      <button class="pad snare"><span class="key">1</span><span class="name">snare lo</span></button>
+      <button class="pad"><span class="key">2</span><span class="name">snare rim</span></button>
+      <button class="pad"><span class="key">3</span><span class="name">rim lo</span></button>
+      <button class="pad kick"><span class="key">.</span><span class="name">kick grit</span></button>
+      <button class="pad"><span class="key">0</span><span class="name">kick dirt</span></button>
+      <button class="pad"><span class="key">ENTER</span><span class="name">clap real</span></button>
+    </div>
+    <p class="note">เสียบ KO II ด้วยสาย USB-C เพื่อฟังเสียงแพด</p>
+  </section>
+  <aside class="side">
+    <section class="card">
+      <div class="transport"><button class="btn primary">▶ Play</button><button class="btn">■ Stop</button></div>
+      <p class="notice">ยังไม่มีเสียง: เสียบ KO II ด้วย USB-C ก่อน</p>
+    </section>
+    <section class="card">
+      <div class="knob"><label for="t">Tempo</label><input id="t" type="range" min="60" max="180" value="78"><output>78 BPM</output></div>
+      <div class="knob"><label for="s">Swing</label><input id="s" type="range" min="50" max="75" value="58"><output>58%</output></div>
+      <div class="row"><label>Style</label><select><option>Lo-fi chill</option></select></div>
+      <div class="row"><label class="check"><input type="checkbox" checked> Fill ทุกบาร์ที่ 4</label></div>
+    </section>
+    <button class="btn wide">🎲 New beat</button>
+    <section class="card samples">
+      <button class="btn wide">อ่านแพดจาก KO II</button>
+      <p>ปิดหน้าเว็บ TE Sample Tool ก่อน · อ่านล่าสุด: project 2</p>
+      <p>เลือกแพดเพื่อดูรายละเอียด</p>
+    </section>
+  </aside>
+</main>
+<footer class="seq" aria-label="Beat sequencer">
+  <div class="seq-head"><span>จังหวะ · กด Play เพื่อเริ่ม</span><span>หยุดอยู่ · 78 BPM · swing 58%</span></div>
+  <div class="lane"><span class="label">Hat</span><div class="steps" id="hat"></div></div>
+  <div class="lane"><span class="label">Snare</span><div class="steps" id="snare"></div></div>
+  <div class="lane"><span class="label">Kick</span><div class="steps" id="kick"></div></div>
+</footer>
+<script>
+  const pattern = { hat:[1,0,0,0,1,0,1,0,1,0,0,0,1,0,1,0], snare:[0,0,0,0,1,0,0,0,0,0,0,1,1,0,0,1], kick:[1,0,0,0,0,0,0,0,0,0,1,0,0,0,1,0] };
+  for (const [lane, steps] of Object.entries(pattern)) {
+    const el = document.getElementById(lane);
+    steps.forEach(on => { const s = document.createElement("span"); if (on) s.className = "on " + lane; el.appendChild(s); });
+  }
+</script>
+</body>
+</html>

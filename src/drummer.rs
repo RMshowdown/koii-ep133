@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Bars in one loop. The last one is the fill bar (when fills are on).
-pub const LOOP_BARS: u32 = 4;
+/// Loop lengths the owner can pick (bars). The last bar is the fill bar (when fills are on).
+pub const LOOP_CHOICES: [u32; 3] = [4, 8, 16];
 const STOPPED: u32 = u32::MAX;
 
 #[derive(Clone)]
@@ -18,6 +18,8 @@ pub struct Settings {
     pub bpm: f32,
     pub swing: f32,
     pub fills: bool,
+    /// Bars in one loop (one of LOOP_CHOICES).
+    pub bars: u32,
     pub beat: Beat,
     /// MIDI note for Kick, Snare, Hat (None = that drum stays quiet).
     pub notes: [Option<u8>; 3],
@@ -50,7 +52,7 @@ impl Drummer {
         self.settings.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// (bar 0-3, step 0-15) now playing.
+    /// (bar from 0, step 0-15) now playing.
     pub fn position(&self) -> Option<(u32, usize)> {
         match self.position.load(Ordering::Relaxed) {
             STOPPED => None,
@@ -98,7 +100,11 @@ fn run(out: MidiOut, ctx: egui::Context, settings: Arc<Mutex<Settings>>, positio
             next = now; // we fell far behind (PC was busy): don't rush to catch up
         }
 
-        let use_fill = s.fills && bar == LOOP_BARS - 1;
+        let bars = s.bars.max(1);
+        if bar >= bars {
+            bar = 0; // loop got shorter while playing
+        }
+        let use_fill = s.fills && bar == bars - 1;
         let pattern = if use_fill { &s.beat.fill } else { &s.beat.main };
         for (drum, note) in s.notes.iter().enumerate() {
             let (Some(note), velocity) = (*note, pattern[drum][step]) else { continue };
@@ -120,7 +126,7 @@ fn run(out: MidiOut, ctx: egui::Context, settings: Arc<Mutex<Settings>>, positio
         step += 1;
         if step == STEPS {
             step = 0;
-            bar = (bar + 1) % LOOP_BARS;
+            bar = (bar + 1) % bars;
         }
     }
 }

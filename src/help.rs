@@ -1,4 +1,4 @@
-//! The "How do I…?" card: search by goal, most-used list, then step by step
+//! The Button Guide card: search by goal, most-used list, then step by step
 //! with the buttons lit up on a simple KO II drawing.
 
 use crate::howto::{HOW_TOS, Key, MOST_USED, search};
@@ -18,7 +18,7 @@ impl HelpState {
     /// Draws the card contents. Sets `close_clicked` when ✕ is pressed.
     pub fn show(&mut self, ui: &mut egui::Ui, close_clicked: &mut bool) {
         ui.horizontal(|ui| {
-            ui.strong("How do I…?");
+            ui.strong(crate::GUIDE_NAME);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("✕").clicked() {
                     *close_clicked = true;
@@ -39,7 +39,7 @@ impl HelpState {
         ui.label("What do you want to do?");
         ui.add(
             egui::TextEdit::singleline(&mut self.query)
-                .hint_text("copy, erase, ลบ, tempo…")
+                .hint_text("copy, erase, tempo…")
                 .desired_width(f32::INFINITY),
         );
         ui.add_space(8.0);
@@ -84,8 +84,8 @@ impl HelpState {
         ui.add_space(8.0);
 
         egui::Frame::new()
-            .fill(ui.visuals().faint_bg_color)
-            .corner_radius(6.0)
+            .fill(crate::theme::current().well)
+            .corner_radius(10.0)
             .inner_margin(egui::Margin::same(10))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -160,15 +160,14 @@ pub fn text_scale(ui: &egui::Ui) -> f32 {
 
 /// KO II drawing with the buttons for this step lit up.
 fn draw_ko2(ui: &mut egui::Ui, lit: &[Key]) {
-    let lit_color = egui::Color32::from_rgb(45, 125, 220);
-    let visuals = ui.visuals().clone();
+    let t = crate::theme::current();
     let scale = text_scale(ui);
-    let stroke = visuals.widgets.noninteractive.bg_stroke;
+    let stroke = egui::Stroke::new(1.0, t.line);
 
     egui::Frame::new()
         .stroke(stroke)
-        .corner_radius(8.0)
-        .inner_margin(egui::Margin::same(6))
+        .corner_radius(12.0)
+        .inner_margin(egui::Margin::same(8))
         .show(ui, |ui| {
             let gap = 4.0;
             let width = ui.available_width();
@@ -181,7 +180,6 @@ fn draw_ko2(ui: &mut egui::Ui, lit: &[Key]) {
             let painter = ui.painter();
             let main_font = egui::FontId::proportional(9.5 * scale);
             let sub_font = egui::FontId::proportional(7.5 * scale);
-            let off_text = visuals.weak_text_color();
 
             for (r, row) in LAYOUT.iter().enumerate() {
                 for (c, cell) in row.iter().enumerate() {
@@ -198,9 +196,9 @@ fn draw_ko2(ui: &mut egui::Ui, lit: &[Key]) {
                         Cell::Volume | Cell::Empty => false,
                     };
                     let (fill, text) = if on {
-                        (lit_color, egui::Color32::WHITE)
+                        (t.accent, t.accent_ink)
                     } else {
-                        (visuals.extreme_bg_color, off_text)
+                        (t.well, t.soft)
                     };
                     match cell {
                         Cell::Empty => {}

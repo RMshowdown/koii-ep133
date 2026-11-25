@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KO II Lo-fi Drummer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@400;500;600&family=Noto+Sans+Thai:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #F6F2EA;
+    --card: #FFFCF6;
+    --ink: #33302B;
+    --soft: #7A7266;
+    --line: #E7E0D2;
+    --sage: #5E8F82;
+    --sage-soft: #DDEBE6;
+    --hat: #B9A98F;
+    --snare: #9DB7C4;
+    --kick: #D9A68A;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Familjen Grotesk", "Noto Sans Thai", system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  button, select, input { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--sage); outline-offset: 2px; }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 28px;
+  }
+  .title { font-size: 19px; font-weight: 600; }
+  .title small { font-weight: 400; color: var(--soft); margin-left: 8px; font-size: 15px; }
+  .header-right { display: flex; align-items: center; gap: 14px; color: var(--soft); }
+  .status {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: var(--card); border: 1px solid var(--line);
+    padding: 6px 12px; border-radius: 999px;
+  }
+  .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #C9BFAE; }
+  select {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 10px; padding: 7px 10px;
+  }
+
+  main {
+    display: grid;
+    grid-template-columns: minmax(300px, 1fr) minmax(300px, 370px);
+    gap: 24px;
+    padding: 8px 28px 24px;
+    flex: 1;
+  }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 22px;
+  }
+
+  .pads-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+  .tabs { display: flex; gap: 4px; background: var(--bg); padding: 4px; border-radius: 999px; }
+  .tabs button {
+    background: none; border: 0; padding: 6px 14px; border-radius: 999px;
+    color: var(--soft); cursor: pointer;
+  }
+  .tabs button[aria-pressed="true"] { background: var(--card); color: var(--ink); box-shadow: 0 1px 2px rgba(60,50,30,.12); }
+
+  .pads { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .pad {
+    aspect-ratio: 1.4;
+    background: #FFFFFF;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 12px 14px;
+    display: flex; flex-direction: column; justify-content: space-between;
+    text-align: left; cursor: pointer;
+    box-shadow: 0 2px 0 #EAE3D6;
+    transition: transform 90ms ease, box-shadow 90ms ease, background 120ms ease;
+  }
+  .pad:hover { background: #FBF8F1; }
+  .pad:active { transform: translateY(2px); box-shadow: 0 0 0 #EAE3D6; }
+  .pad .top { display: flex; justify-content: space-between; align-items: center; }
+  .pad .key { font-size: 12px; color: var(--soft); }
+  .pad .dot { width: 9px; height: 9px; border-radius: 50%; }
+  .pad .name { font-size: 18px; font-weight: 500; line-height: 1.15; }
+  .pad.hat .dot { background: var(--hat); }
+  .pad.snare .dot { background: var(--snare); }
+  .pad.kick .dot { background: var(--kick); }
+  .pad.selected { border-color: var(--sage); background: var(--sage-soft); }
+  .note { margin-top: 14px; color: var(--soft); font-size: 14px; }
+
+  .side { display: flex; flex-direction: column; gap: 16px; }
+  .transport { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .btn {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; padding: 12px; cursor: pointer; font-weight: 500;
+  }
+  .btn:hover { background: #FBF8F1; }
+  .btn.primary { background: var(--sage); color: #FFFFFF; border-color: var(--sage); }
+  .btn.primary:hover { background: #558276; }
+  .btn.wide { width: 100%; }
+  .notice { margin-top: 10px; color: var(--soft); font-size: 14px; }
+
+  .knob { display: grid; grid-template-columns: 64px 1fr 66px; align-items: center; gap: 12px; padding: 10px 0; }
+  .knob label { color: var(--soft); }
+  .knob output { text-align: right; font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 100%; accent-color: var(--sage); }
+  .row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
+  .row label { color: var(--soft); }
+  .check { display: inline-flex; gap: 8px; align-items: center; cursor: pointer; color: var(--ink); }
+  .check input { accent-color: var(--sage); width: 16px; height: 16px; }
+
+  .heading { color: var(--soft); font-size: 14px; margin-bottom: 8px; }
+  .samples p { color: var(--soft); font-size: 14px; margin-bottom: 6px; }
+  .detail { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 10px; }
+
+  footer.seq {
+    margin: 0 28px 20px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 18px 22px;
+  }
+  .seq-head { display: flex; justify-content: space-between; color: var(--soft); margin-bottom: 12px; font-size: 14px; }
+  .lane { display: grid; grid-template-columns: 56px 1fr; align-items: center; gap: 12px; margin-bottom: 8px; }
+  .lane .label { color: var(--soft); font-size: 14px; }
+  .steps { display: grid; grid-template-columns: repeat(16, 1fr); gap: 6px; }
+  .steps span { height: 26px; border-radius: 8px; background: #F3EEE4; }
+  .steps span:nth-child(4n+1) { background: #EDE7DB; }
+  .steps span.on.hat { background: var(--hat); }
+  .steps span.on.snare { background: var(--snare); }
+  .steps span.on.kick { background: var(--kick); }
+  .seq-foot { display: flex; justify-content: space-between; color: var(--soft); margin-top: 10px; font-size: 13px; }
+
+  @media (max-width: 860px) {
+    main { grid-template-columns: 1fr; }
+    footer.seq { margin: 0 16px 16px; }
+    .steps { gap: 3px; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="title">KO II Lo-fi Drummer <small>Project 2</small></div>
+  <div class="header-right">
+    <span class="status">KO II ยังไม่ได้เชื่อมต่อ</span>
+    <select aria-label="Text size"><option>Text: Small</option><option>Text: Large</option></select>
+    <span>วิธีใช้</span>
+  </div>
+</header>
+
+<main>
+  <section class="card" aria-label="Pads">
+    <div class="pads-head">
+      <div class="tabs" role="group" aria-label="Pad group">
+        <button aria-pressed="true">A</button>
+        <button aria-pressed="false">B</button>
+        <button aria-pressed="false">C</button>
+        <button aria-pressed="false">D</button>
+      </div>
+    </div>
+    <div class="pads">
+      <button class="pad"><span class="top"><span class="key">7</span></span><span class="name">tom fat</span></button>
+      <button class="pad"><span class="top"><span class="key">8</span></span><span class="name">ride dark</span></button>
+      <button class="pad"><span class="top"><span class="key">9</span></span><span class="name">crash</span></button>
+      <button class="pad"><span class="top"><span class="key">4</span></span><span class="name">hand drum hi</span></button>
+      <button class="pad hat"><span class="top"><span class="key">5</span><span class="dot"></span></span><span class="name">closed hat lo</span></button>
+      <button class="pad"><span class="top"><span class="key">6</span></span><span class="name">open hat real</span></button>
+      <button class="pad snare"><span class="top"><span class="key">1</span><span class="dot"></span></span><span class="name">snare lo</span></button>
+      <button class="pad"><span class="top"><span class="key">2</span></span><span class="name">snare rim</span></button>
+      <button class="pad"><span class="top"><span class="key">3</span></span><span class="name">rim lo</span></button>
+      <button class="pad kick"><span class="top"><span class="key">.</span><span class="dot"></span></span><span class="name">kick grit</span></button>
+      <button class="pad"><span class="top"><span class="key">0</span></span><span class="name">kick dirt</span></button>
+      <button class="pad"><span class="top"><span class="key">ENTER</span></span><span class="name">clap real</span></button>
+    </div>
+    <p class="note">เสียบ KO II ด้วยสาย USB-C เพื่อฟังเสียงแพด</p>
+  </section>
+
+  <aside class="side" aria-label="Controls">
+    <section class="card">
+      <div class="transport">
+        <button class="btn primary">▶ Play</button>
+        <button class="btn">■ Stop</button>
+      </div>
+      <p class="notice">ยังไม่มีเสียง: เสียบ KO II ด้วย USB-C ก่อน</p>
+    </section>
+
+    <section class="card">
+      <div class="knob"><label for="tempo">Tempo</label><input id="tempo" type="range" min="60" max="180" value="78"><output>78 BPM</output></div>
+      <div class="knob"><label for="swing">Swing</label><input id="swing" type="range" min="50" max="75" value="58"><output>58%</output></div>
+      <div class="row"><label for="style">Style</label><select id="style"><option>Lo-fi chill</option></select></div>
+      <div class="row"><label class="check"><input type="checkbox" checked> Fill ทุกบาร์ที่ 4</label></div>
+    </section>
+
+    <button class="btn wide">🎲 New beat</button>
+
+    <section class="card samples">
+      <p class="heading">เสียงแพด</p>
+      <button class="btn wide">อ่านแพดจาก KO II</button>
+      <p style="margin-top:10px">ปิดหน้าเว็บ TE Sample Tool ก่อน</p>
+      <p>อ่านล่าสุด: project 2</p>
+      <p class="detail">เลือกแพดเพื่อดูรายละเอียด</p>
+    </section>
+  </aside>
+</main>
+
+<footer class="seq" aria-label="Beat sequencer">
+  <div class="seq-head"><span>จังหวะ · กด Play เพื่อเริ่ม</span><span>หยุดอยู่ · Lo-fi chill · 78 BPM · swing 58%</span></div>
+  <div class="lane"><span class="label">Hat</span><div class="steps" id="hat"></div></div>
+  <div class="lane"><span class="label">Snare</span><div class="steps" id="snare"></div></div>
+  <div class="lane"><span class="label">Kick</span><div class="steps" id="kick"></div></div>
+  <div class="seq-foot"><span>KO II ยังไม่ได้เชื่อมต่อ</span><span>Project 2</span></div>
+</footer>
+
+<script>
+  const pattern = {
+    hat:   [1,0,0,0, 1,0,1,0, 1,0,0,0, 1,0,1,0],
+    snare: [0,0,0,0, 1,0,0,0, 0,0,0,1, 1,0,0,1],
+    kick:  [1,0,0,0, 0,0,0,0, 0,0,1,0, 0,0,1,0]
+  };
+  for (const [lane, steps] of Object.entries(pattern)) {
+    const el = document.getElementById(lane);
+    steps.forEach((on) => {
+      const s = document.createElement("span");
+      if (on) s.className = "on " + lane;
+      el.appendChild(s);
+    });
+  }
+</script>
+</body>
+</html>

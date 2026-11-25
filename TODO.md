@@ -14,14 +14,16 @@ Short list. One line each. Done work lives in README (Phases) and git history.
 
 - [ ] Phase 5: Keep / Skip, song library (name, play, delete), export `.mid`
 - [ ] Phase 6: you play, the app fills in the rest
-- [ ] Phase 7: make it pretty (owner: looks need a lot of work), Settings: card on left or right
+- [ ] Phase 7: make it pretty (owner: looks need a lot of work). Done so far: Settings window (7 themes, text size), card layout, fonts. Left: Settings choice for Button Guide side (left/right)
 - [ ] Phase 8 (optional, risky): write songs into a KO II project, backup first
 
 ## Polish list (owner said: looks and details need a lot more work)
 
+- [ ] Test on the KO II: press pads on the device (app pad lights up?) and press A/B/C/D (app group follows?)
 - [ ] Ask the owner for their list of look and detail changes before Phase 7
 - [ ] Hide the black console window (release build already hides it)
 - [ ] Help card can fall behind other apps when another window is clicked (needs Windows "owner window"; may need `windows-sys`, ask first)
 - [ ] Card may lag a little when the main window is dragged fast
-- [ ] Check Large / Extra large text at the smallest window size
+- [ ] Check Large / Extra large text at the smallest window size (pads scroll at Extra large in the start-size window)
+- [ ] Owner to try all 7 themes and say which need colour fixes
 - [ ] Play with no sound at first launch: seen once by the owner, cause unknown (maybe two copies of the app open). Watch for it.

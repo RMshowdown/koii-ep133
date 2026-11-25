@@ -12,6 +12,9 @@ pub struct Settings {
     /// Index into TEXT_SIZES.
     #[serde(default = "default_text_size")]
     pub text_size: usize,
+    /// Index into theme::THEMES.
+    #[serde(default)]
+    pub theme: usize,
 }
 
 fn default_text_size() -> usize {
@@ -20,7 +23,7 @@ fn default_text_size() -> usize {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { text_size: default_text_size() }
+        Self { text_size: default_text_size(), theme: 0 }
     }
 }
 
@@ -36,6 +39,7 @@ impl Settings {
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default();
         s.text_size = s.text_size.min(TEXT_SIZES.len() - 1);
+        s.theme = s.theme.min(crate::theme::THEMES.len() - 1);
         s
     }
 

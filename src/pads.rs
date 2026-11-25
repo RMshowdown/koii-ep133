@@ -20,6 +20,31 @@ pub fn midi_note(group: usize, pad: usize) -> u8 {
     36 + 12 * group as u8 + NOTE_OFFSET[pad]
 }
 
+/// Which pad a MIDI note belongs to (notes 36-83), the reverse of `midi_note`.
+pub fn pad_from_note(note: u8) -> Option<PadRef> {
+    if !(36..=83).contains(&note) {
+        return None;
+    }
+    let group = ((note - 36) / 12) as usize;
+    let offset = (note - 36) % 12;
+    let pad = NOTE_OFFSET.iter().position(|&o| o == offset)?;
+    Some(PadRef { group, pad })
+}
+
+/// Group picked on the KO II, from a "metadata updated" event on a project's groups folder
+/// (file id 2000 + 1000*project + 100) whose `active` value is a group folder
+/// (+200 for A, +300 B, +400 C, +500 D). Community docs (ep-series-sysex file-protocol.md).
+pub fn group_from_event(fid: u16, active: u64) -> Option<usize> {
+    if fid < 3000 || fid % 1000 != 100 {
+        return None;
+    }
+    let project_fid = (fid - 100) as u64;
+    match active.checked_sub(project_fid)? {
+        rel @ (200 | 300 | 400 | 500) => Some(((rel - 200) / 100) as usize),
+        _ => None,
+    }
+}
+
 /// SysEx file id of a pad node: 2000 + 1000*project + 200 + 100*group + index (1-12).
 pub fn pad_file_id(project: u8, group: usize, pad: usize) -> u16 {
     2000 + 1000 * project as u16 + 200 + 100 * group as u16 + pad as u16 + 1
@@ -156,6 +181,25 @@ impl PadMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn group_from_event_reads_groups_folder() {
+        assert_eq!(group_from_event(3100, 3200), Some(0));
+        assert_eq!(group_from_event(4100, 4500), Some(3));
+        assert_eq!(group_from_event(3200, 3201), None); // a pad, not a group
+        assert_eq!(group_from_event(3100, 4300), None); // other project
+    }
+
+    #[test]
+    fn pad_from_note_reverses_midi_note() {
+        for group in 0..4 {
+            for pad in 0..12 {
+                assert_eq!(pad_from_note(midi_note(group, pad)), Some(PadRef { group, pad }));
+            }
+        }
+        assert_eq!(pad_from_note(35), None);
+        assert_eq!(pad_from_note(84), None);
+    }
 
     #[test]
     fn notes_match_docs() {

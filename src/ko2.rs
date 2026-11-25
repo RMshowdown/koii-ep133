@@ -48,6 +48,10 @@ pub enum Event {
     ReadProgress(String),
     ReadDone(ReadResult),
     ReadFailed(String),
+    /// A pad was pressed (on = true) or let go on the KO II itself: its MIDI note.
+    DeviceNote { note: u8, on: bool },
+    /// A group (0 = A) was picked on the KO II itself.
+    DeviceGroup(usize),
 }
 
 pub struct ReadResult {
@@ -135,11 +139,12 @@ impl Worker {
     fn run(mut self) {
         let mut next_check = Instant::now();
         loop {
-            match self.commands.recv_timeout(Duration::from_millis(250)) {
+            match self.commands.recv_timeout(Duration::from_millis(30)) {
                 Ok(cmd) => self.handle(cmd),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return, // window closed
             }
+            self.check_device_events();
             if Instant::now() >= next_check {
                 self.check_connection();
                 next_check = Instant::now() + Duration::from_secs(1);
@@ -181,9 +186,12 @@ impl Worker {
         match (&self.conn, found) {
             (Some(conn), Some(name)) if conn.port_name == name => {}
             (Some(_), _) => self.drop_connection(),
-            (None, Some(name)) => match open(&name, &self.out) {
-                Ok(conn) => {
+            (None, Some(name)) => match open(&name, &self.out, self.events.clone(), self.ctx.clone()) {
+                Ok(mut conn) => {
                     self.last_busy = None;
+                    // FILE INIT (read-only, same as "Read pads") so the KO II tells us
+                    // when a group is picked on the device. If it fails, notes still work.
+                    let _ = request(&mut conn, sysex::CMD_FILE, &[0x01, 0x01, 0x00, 0x40, 0x00, 0x00]);
                     self.conn = Some(conn);
                     self.emit(Event::Connected(name));
                 }
@@ -199,6 +207,22 @@ impl Worker {
                     self.emit(Event::Disconnected);
                 }
             }
+        }
+    }
+
+    /// Messages the KO II sends by itself: group picked on the device.
+    fn check_device_events(&mut self) {
+        let Some(conn) = &self.conn else { return };
+        let mut group = None;
+        while let Ok(frame) = conn.sysex.try_recv() {
+            if let Some((fid, json)) = sysex::parse_metadata_event(&frame) {
+                if let Some(g) = json.get("active").and_then(|v| v.as_u64()).and_then(|a| pads::group_from_event(fid, a)) {
+                    group = Some(g);
+                }
+            }
+        }
+        if let Some(g) = group {
+            self.emit(Event::DeviceGroup(g));
         }
     }
 
@@ -285,9 +309,9 @@ impl Worker {
     }
 }
 
-fn open(port_name: &str, shared_out: &MidiOut) -> Result<Connection, String> {
+fn open(port_name: &str, shared_out: &MidiOut, events: Sender<Event>, ctx: egui::Context) -> Result<Connection, String> {
     const BUSY: &str = "KO II found, but another app is using it. Close the TE Sample Tool web page or other music apps.";
-    let out = MidiOutput::new("KO II Lo-fi Drummer").map_err(|e| e.to_string())?;
+    let out = MidiOutput::new("KO II Buddy").map_err(|e| e.to_string())?;
     let out_port = out
         .ports()
         .into_iter()
@@ -295,7 +319,7 @@ fn open(port_name: &str, shared_out: &MidiOut) -> Result<Connection, String> {
         .ok_or("KO II port went away.")?;
     let out_conn = out.connect(&out_port, "koii-out").map_err(|_| BUSY.to_string())?;
 
-    let mut input = MidiInput::new("KO II Lo-fi Drummer").map_err(|e| e.to_string())?;
+    let mut input = MidiInput::new("KO II Buddy").map_err(|e| e.to_string())?;
     input.ignore(Ignore::None); // we need SysEx
     let in_port = input
         .ports()
@@ -309,6 +333,19 @@ fn open(port_name: &str, shared_out: &MidiOut) -> Result<Connection, String> {
             &in_port,
             "koii-in",
             move |_t, bytes, _| {
+                // Pads pressed on the KO II come in as normal note on / note off messages.
+                if let [status, note, velocity, ..] = *bytes {
+                    let on = match status & 0xF0 {
+                        0x90 => Some(velocity > 0),
+                        0x80 => Some(false),
+                        _ => None,
+                    };
+                    if let Some(on) = on {
+                        let _ = events.send(Event::DeviceNote { note, on });
+                        ctx.request_repaint();
+                        return;
+                    }
+                }
                 if let Some(frame) = assembler.push(bytes) {
                     let _ = tx.send(frame);
                 }
