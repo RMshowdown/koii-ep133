@@ -52,6 +52,62 @@ pub enum Event {
     DeviceNote { note: u8, on: bool },
     /// A group (0 = A) was picked on the KO II itself.
     DeviceGroup(usize),
+    /// The sound on a pad was changed on the KO II itself (new sample slot).
+    DevicePadSound { project: u8, pad: pads::PadRef, slot: u16 },
+    /// Any other message from the KO II, in words (shown in the status bar, also in the log file).
+    DeviceMessage(String),
+}
+
+/// Everything the KO II sends is written to `%APPDATA%\koii-ep133\midi-log.txt`,
+/// so we can learn which buttons and knobs it reports. Cleared when the app starts.
+pub mod midi_log {
+    use std::io::Write;
+    use std::path::PathBuf;
+    use std::sync::OnceLock;
+    use std::time::Instant;
+
+    static START: OnceLock<Instant> = OnceLock::new();
+
+    fn path() -> Option<PathBuf> {
+        Some(PathBuf::from(std::env::var_os("APPDATA")?).join("koii-ep133").join("midi-log.txt"))
+    }
+
+    pub fn clear() {
+        START.get_or_init(Instant::now);
+        if let Some(p) = path() {
+            if let Some(dir) = p.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(p, "");
+        }
+    }
+
+    pub fn write(line: &str) {
+        let Some(p) = path() else { return };
+        let secs = START.get_or_init(Instant::now).elapsed().as_secs_f32();
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+            let _ = writeln!(f, "{secs:9.3}  {line}");
+        }
+    }
+
+    pub fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ")
+    }
+}
+
+/// A normal (not SysEx) MIDI message in plain words, e.g. "ch 1 note 43 on vel 100".
+fn describe(bytes: &[u8]) -> String {
+    let ch = (bytes[0] & 0x0F) + 1;
+    match (bytes[0] & 0xF0, bytes.get(1), bytes.get(2)) {
+        (0x90, Some(n), Some(0)) | (0x80, Some(n), _) => format!("ch {ch} note {n} off"),
+        (0x90, Some(n), Some(v)) => format!("ch {ch} note {n} on vel {v}"),
+        (0xB0, Some(cc), Some(v)) => format!("ch {ch} CC {cc} = {v}"),
+        (0xC0, Some(p), _) => format!("ch {ch} program {p}"),
+        (0xE0, Some(lo), Some(hi)) => format!("ch {ch} pitch bend {}", (*hi as i32) << 7 | *lo as i32),
+        (0xA0, Some(n), Some(v)) => format!("ch {ch} aftertouch note {n} = {v}"),
+        (0xD0, Some(v), _) => format!("ch {ch} pressure {v}"),
+        _ => format!("other: {}", midi_log::hex(bytes)),
+    }
 }
 
 pub struct ReadResult {
@@ -215,10 +271,23 @@ impl Worker {
         let Some(conn) = &self.conn else { return };
         let mut group = None;
         while let Ok(frame) = conn.sysex.try_recv() {
+            let shown = &frame[..frame.len().min(120)];
+            midi_log::write(&format!("sysex {} bytes: {}", frame.len(), midi_log::hex(shown)));
             if let Some((fid, json)) = sysex::parse_metadata_event(&frame) {
-                if let Some(g) = json.get("active").and_then(|v| v.as_u64()).and_then(|a| pads::group_from_event(fid, a)) {
+                midi_log::write(&format!("  = file {fid} changed: {json}"));
+                let active = json.get("active").and_then(|v| v.as_u64());
+                if let Some(g) = active.and_then(|a| pads::group_from_event(fid, a)) {
                     group = Some(g);
+                    let _ = self.events.send(Event::DeviceMessage(format!("picked group {}", GROUPS[g])));
+                } else if let (Some((project, pad)), Some(slot)) =
+                    (pads::pad_from_file_id(fid), json.get("sym").and_then(|v| v.as_u64()))
+                {
+                    let slot = slot as u16;
+                    let text = format!("pad {} {} now plays sound {slot}", GROUPS[pad.group], pads::PAD_LABELS[pad.pad]);
+                    let _ = self.events.send(Event::DeviceMessage(text));
+                    let _ = self.events.send(Event::DevicePadSound { project, pad, slot });
                 }
+                self.ctx.request_repaint();
             }
         }
         if let Some(g) = group {
@@ -333,6 +402,27 @@ fn open(port_name: &str, shared_out: &MidiOut, events: Sender<Event>, ctx: egui:
             &in_port,
             "koii-in",
             move |_t, bytes, _| {
+                // Clock and "still here" messages come many times a second: skip them.
+                if bytes.is_empty() || matches!(bytes[0], 0xF8 | 0xFE) {
+                    return;
+                }
+                if bytes[0] != 0xF0 && bytes[0] >= 0x80 && bytes[0] < 0xF0 {
+                    let text = describe(bytes);
+                    midi_log::write(&text);
+                    let _ = events.send(Event::DeviceMessage(text));
+                    ctx.request_repaint();
+                } else if bytes[0] >= 0xF8 {
+                    let text = match bytes[0] {
+                        0xFA => "start",
+                        0xFB => "continue",
+                        0xFC => "stop",
+                        _ => "realtime message",
+                    };
+                    midi_log::write(text);
+                    let _ = events.send(Event::DeviceMessage(text.to_string()));
+                    ctx.request_repaint();
+                    return;
+                }
                 // Pads pressed on the KO II come in as normal note on / note off messages.
                 if let [status, note, velocity, ..] = *bytes {
                     let on = match status & 0xF0 {

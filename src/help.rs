@@ -12,9 +12,18 @@ pub struct HelpState {
     query: String,
     /// Open answer (index into HOW_TOS) and its current step.
     open: Option<(usize, usize)>,
+    /// Show only answers that use this KO II button (and its name), picked on the app's KO II panel.
+    key: Option<(Key, &'static str)>,
 }
 
 impl HelpState {
+    /// List the answers that use this button (clicked on the KO II panel in the main window).
+    pub fn show_key(&mut self, key: Key, name: &'static str) {
+        self.key = Some((key, name));
+        self.open = None;
+        self.query.clear();
+    }
+
     /// Draws the card contents. Sets `close_clicked` when ✕ is pressed.
     pub fn show(&mut self, ui: &mut egui::Ui, close_clicked: &mut bool) {
         ui.horizontal(|ui| {
@@ -36,6 +45,27 @@ impl HelpState {
     }
 
     fn list(&mut self, ui: &mut egui::Ui) {
+        if let Some((key, name)) = self.key {
+            ui.horizontal(|ui| {
+                ui.strong(format!("What {name} does"));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Show all").clicked() {
+                        self.key = None;
+                    }
+                });
+            });
+            ui.add_space(6.0);
+            let results: Vec<usize> = (0..HOW_TOS.len())
+                .filter(|&i| HOW_TOS[i].steps.iter().any(|s| s.keys.contains(&key)))
+                .collect();
+            if results.is_empty() {
+                ui.weak(format!("No answers use {name} yet. Try the full cheat sheet below."));
+            }
+            self.result_list(ui, results);
+            ui.add_space(12.0);
+            ui.hyperlink_to("Full list: Joey's cheat sheet ↗", CHEAT_SHEET_URL);
+            return;
+        }
         ui.label("What do you want to do?");
         ui.add(
             egui::TextEdit::singleline(&mut self.query)
@@ -54,6 +84,13 @@ impl HelpState {
         } else if results.is_empty() {
             ui.weak("Nothing found. Try another word, or the full cheat sheet below.");
         }
+        self.result_list(ui, results);
+
+        ui.add_space(12.0);
+        ui.hyperlink_to("Full list: Joey's cheat sheet ↗", CHEAT_SHEET_URL);
+    }
+
+    fn result_list(&mut self, ui: &mut egui::Ui, results: Vec<usize>) {
         ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
             for idx in results {
                 let text = egui::RichText::new(format!("  {}", HOW_TOS[idx].title))
@@ -63,15 +100,13 @@ impl HelpState {
                 }
             }
         });
-
-        ui.add_space(12.0);
-        ui.hyperlink_to("Full list: Joey's cheat sheet ↗", CHEAT_SHEET_URL);
     }
 
     fn answer(&mut self, ui: &mut egui::Ui, idx: usize, step: usize) {
         let how = &HOW_TOS[idx];
         let step = step.min(how.steps.len() - 1);
-        if ui.button("← All").clicked() {
+        let back = if self.key.is_some() { "← Back" } else { "← All" };
+        if ui.button(back).clicked() {
             self.open = None;
             return;
         }

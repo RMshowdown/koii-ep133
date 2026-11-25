@@ -20,6 +20,8 @@ pub struct Settings {
     pub fills: bool,
     /// Bars in one loop (one of LOOP_CHOICES).
     pub bars: u32,
+    /// Beat loudness 0-100 % (scales how hard each note is hit).
+    pub volume: f32,
     pub beat: Beat,
     /// MIDI note for Kick, Snare, Hat (None = that drum stays quiet).
     pub notes: [Option<u8>; 3],
@@ -108,7 +110,7 @@ fn run(out: MidiOut, ctx: egui::Context, settings: Arc<Mutex<Settings>>, positio
         let pattern = if use_fill { &s.beat.fill } else { &s.beat.main };
         for (drum, note) in s.notes.iter().enumerate() {
             let (Some(note), velocity) = (*note, pattern[drum][step]) else { continue };
-            if velocity == 0 {
+            if velocity == 0 || s.volume < 1.0 {
                 continue;
             }
             if sounding.contains(&note) {
@@ -116,6 +118,7 @@ fn run(out: MidiOut, ctx: egui::Context, settings: Arc<Mutex<Settings>>, positio
             } else {
                 sounding.push(note);
             }
+            let velocity = ((velocity as f32 * s.volume / 100.0).round() as u8).clamp(1, 127);
             out.send(&[0x90, note, velocity]);
         }
         position.store(bar * STEPS as u32 + step as u32, Ordering::Relaxed);

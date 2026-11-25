@@ -18,7 +18,7 @@ use ko2::{Command, Event, Ko2};
 use pads::{GROUPS, PAD_LABELS, PadMap, PadRef};
 
 // Window size limits (width, height in points). Owner can ask to change these.
-const START_SIZE: [f32; 2] = [960.0, 730.0];
+const START_SIZE: [f32; 2] = [960.0, 780.0];
 const MIN_SIZE: [f32; 2] = [960.0, 620.0];
 const MAX_SIZE: [f32; 2] = [1600.0, 1000.0];
 
@@ -91,6 +91,10 @@ struct KoiiApp {
     held: Option<u8>,
     /// Pads held down on the KO II itself (their MIDI notes), shown lit.
     device_held: Vec<u8>,
+    /// Last thing the KO II sent, in words (status bar).
+    last_from_device: Option<String>,
+    /// Sound names by sample slot, from the last "Read pads".
+    sound_names: std::collections::HashMap<u16, String>,
     reading: bool,
     /// Last "Read pads" message for the user.
     read_message: String,
@@ -108,6 +112,7 @@ struct KoiiApp {
 
 impl KoiiApp {
     fn new(ctx: &egui::Context) -> Self {
+        ko2::midi_log::clear();
         theme::set_fonts(ctx);
         let settings = settings::Settings::load();
         theme::apply(ctx, settings.theme);
@@ -126,6 +131,7 @@ impl KoiiApp {
                 swing,
                 fills: true,
                 bars: LOOP_CHOICES[0],
+                volume: 100.0,
                 beat: beat::new_beat(style),
                 notes: pad_map.drums.map(|d| d.map(PadRef::note)),
             },
@@ -146,6 +152,8 @@ impl KoiiApp {
             selected: None,
             held: None,
             device_held: Vec::new(),
+            last_from_device: None,
+            sound_names: std::collections::HashMap::new(),
             reading: false,
             read_message: String::new(),
             os_version: None,
@@ -193,8 +201,25 @@ impl KoiiApp {
                     }
                 }
                 Event::DeviceGroup(group) => self.group = group,
+                Event::DeviceMessage(text) => self.last_from_device = Some(text),
+                Event::DevicePadSound { project, pad, slot } => self.device_pad_sound(project, pad, slot),
             }
         }
+    }
+
+    /// The sound on a pad was changed on the KO II: show the new name (if we know it).
+    fn device_pad_sound(&mut self, project: u8, pad: PadRef, slot: u16) {
+        if self.pad_map.project.is_some_and(|p| p != project) {
+            return; // another project than the one we show
+        }
+        let name = match self.sound_names.get(&slot) {
+            Some(name) if !name.is_empty() => name.clone(),
+            _ => format!("Sound {slot}"),
+        };
+        let info = self.pad_map.pad_mut(pad.group, pad.pad);
+        info.slot = Some(slot);
+        info.name = name;
+        self.save_pad_map();
     }
 
     fn apply_read(&mut self, result: ko2::ReadResult) {
@@ -212,6 +237,7 @@ impl KoiiApp {
                 }
             }
         }
+        self.sound_names = result.sound_names;
         // Re-pick drums whose pad has no sound in this project.
         for drum in self.pad_map.drums.iter_mut() {
             if drum.is_some_and(|r| self.pad_map.groups[r.group][r.pad].slot.is_none()) {
@@ -326,14 +352,14 @@ impl eframe::App for KoiiApp {
             .show_separator_line(false)
             .show(ui, |ui| self.status_bar(ui));
 
-        // Beat strip pinned above the status bar, so it never hides when the window is small.
-        let beat_area = egui::Panel::bottom("beat_strip")
-            .frame(egui::Frame::new().inner_margin(egui::Margin { left: side_margin, right: side_margin, top: 8, bottom: 0 }))
+        // Beat "screen" pinned under the top bar, like the display on the KO II.
+        let beat_area = egui::Panel::top("beat_screen")
+            .frame(egui::Frame::new().inner_margin(egui::Margin { left: side_margin, right: side_margin, top: 0, bottom: 10 }))
             .show_separator_line(false)
             .show(ui, |ui| {
                 theme::card(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    self.beat_view(ui);
+                    self.beat_screen(ui);
                 });
             });
         let beat_area_rect = beat_area.response.rect.union(status_area.response.rect);
@@ -390,6 +416,10 @@ impl KoiiApp {
             if !self.read_message.is_empty() {
                 ui.weak("·");
                 ui.weak(&self.read_message);
+            }
+            if let Some(msg) = &self.last_from_device {
+                ui.weak("·");
+                ui.weak(format!("From KO II: {msg}"));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let s = self.drummer.get();
@@ -465,113 +495,102 @@ impl KoiiApp {
         }
     }
 
-    /// The main panel, laid out like the KO II top panel:
+    /// The main panel, laid out like the real KO II top panel (7 columns x 5 rows):
     ///
     /// ```text
-    ///  STYLE  STYLE  LOOP   FILL   [BPM knob] [SWING knob]
-    ///  [A]    7      8      9      NEW BEAT (2 wide)
-    ///  [B]    4      5      6      READ PADS (2 wide)
-    ///  [C]    1      2      3      [-]        [+]
-    ///  [D]    .      0      ENTER  STOP       PLAY
+    ///  VOL    SOUND  MAIN   TEMPO  .      X(BPM) Y(SWING)
+    ///  KEYS   A      7      8      9      SAMPLE TIMING
+    ///  FADER  B      4      5      6      FX     ERASE
+    ///  fader  C      1      2      3      -      +
+    ///  SHIFT  D      .      0      ENTER  RECORD PLAY
     /// ```
-    /// Group buttons sit left of the pads, Play bottom right and the two knobs top right, as on the device.
+    /// App jobs: VOL = beat volume, X = tempo, Y = swing, - / + = tempo by 1, PLAY = play / stop,
+    /// A-D = pad group, pads = play the pad. Every other button opens the Button Guide for it.
     fn device_panel(&mut self, ui: &mut egui::Ui) {
         let t = theme::current();
         let scale = help::text_scale(ui);
         let mut s = self.drummer.get();
         let mut changed = false;
 
-        // Column widths: group buttons, 3 pads, 2 side buttons.
         let gap = 8.0;
+        let left_w = 84.0 * scale;
         let group_w = 64.0 * scale;
-        let side_w = 112.0 * scale;
-        let pad_w = ((ui.available_width() - group_w - 2.0 * side_w - 5.0 * gap) / 3.0).max(100.0 * scale);
-        let widths = [group_w, pad_w, pad_w, pad_w, side_w, side_w];
-        let top_h = 74.0 * scale;
+        let side_w = 104.0 * scale;
+        let pad_w = ((ui.available_width() - left_w - group_w - 2.0 * side_w - 6.0 * gap) / 3.0).max(96.0 * scale);
+        let widths = [left_w, group_w, pad_w, pad_w, pad_w, side_w, side_w];
+        let top_h = 78.0 * scale;
         let row_h = 66.0 * scale;
-        let total = egui::vec2(widths.iter().sum::<f32>() + 5.0 * gap, top_h + 4.0 * row_h + 4.0 * gap);
+        let total = egui::vec2(widths.iter().sum::<f32>() + 6.0 * gap, top_h + 4.0 * row_h + 4.0 * gap);
         let (area, _) = ui.allocate_exact_size(total, egui::Sense::hover());
-        // Rect of a cell: column, row (0 = top row), how many columns wide.
-        let cell = |col: usize, row: usize, span: usize| -> egui::Rect {
+        // Rect of one cell: column, row (0 = top row).
+        let cell = |col: usize, row: usize| -> egui::Rect {
             let x = area.min.x + widths[..col].iter().sum::<f32>() + col as f32 * gap;
-            let w = widths[col..col + span].iter().sum::<f32>() + (span - 1) as f32 * gap;
-            let (y, h) = if row == 0 { (area.min.y, top_h) } else { (area.min.y + top_h + gap + (row - 1) as f32 * (row_h + gap), row_h) };
-            egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h))
+            let (y, h) = if row == 0 {
+                (area.min.y, top_h)
+            } else {
+                (area.min.y + top_h + gap + (row - 1) as f32 * (row_h + gap), row_h)
+            };
+            egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(widths[col], h))
         };
-        let caption = egui::FontId::proportional(11.0 * scale);
-        let caption_y = 4.0 * scale;
-        let big = 18.0 * scale;
+        // Top-row buttons are shorter, like on the device.
+        let top_button = |rect: egui::Rect| rect.shrink2(egui::vec2(0.0, 12.0 * scale));
 
-        // --- Top row: Style, Loop length, Fill, BPM knob, Swing knob.
-        let control_h = 30.0 * scale;
-        let top_control = |rect: egui::Rect| {
-            egui::Rect::from_min_size(egui::pos2(rect.min.x, rect.max.y - control_h - 8.0 * scale), egui::vec2(rect.width(), control_h))
-        };
-        let style_cell = cell(0, 0, 2);
-        ui.painter().text(style_cell.left_top() + egui::vec2(2.0, caption_y), egui::Align2::LEFT_TOP, "STYLE", caption.clone(), t.soft);
-        let mut style = self.style;
-        ui.scope_builder(egui::UiBuilder::new().max_rect(top_control(style_cell)), |ui| {
-            egui::ComboBox::from_id_salt("style")
-                .width(style_cell.width())
-                .selected_text(style.name())
-                .show_ui(ui, |ui| {
-                    for st in STYLES {
-                        ui.selectable_value(&mut style, st, st.name());
-                    }
-                });
-        });
-        if style != self.style {
-            // New style: its own tempo, swing and a fresh beat.
-            self.style = style;
-            (s.bpm, s.swing) = style.defaults();
-            s.beat = beat::new_beat(style);
-            changed = true;
+        // Knobs: VOL, X, Y.
+        changed |= knob(ui, cell(0, 0), "vol", "VOL", &mut s.volume, 0.0..=100.0, "%");
+        changed |= knob(ui, cell(5, 0), "bpm", "X · BPM", &mut s.bpm, 60.0..=140.0, " BPM");
+        changed |= knob(ui, cell(6, 0), "swing", "Y · SWING", &mut s.swing, 50.0..=75.0, "%");
+
+        // Buttons that only explain themselves (open the Button Guide).
+        use howto::Key;
+        let guide_buttons: [(Key, &'static str, &'static str, egui::Rect); 11] = [
+            (Key::Sound, "SOUND", "EDIT", top_button(cell(1, 0))),
+            (Key::Main, "MAIN", "COMMIT", top_button(cell(2, 0))),
+            (Key::Tempo, "TEMPO", "LOOP", top_button(cell(3, 0))),
+            (Key::Keys, "KEYS", "", cell(0, 1)),
+            (Key::Fader, "FADER", "", cell(0, 2)),
+            (Key::Shift, "SHIFT", "", cell(0, 4)),
+            (Key::Sample, "SAMPLE", "CHOP", cell(5, 1)),
+            (Key::Timing, "TIMING", "CORRECT", cell(6, 1)),
+            (Key::Fx, "FX", "OUTPUT", cell(5, 2)),
+            (Key::Erase, "ERASE", "SYSTEM", cell(6, 2)),
+            (Key::Record, "RECORD", "", cell(5, 4)),
+        ];
+        for (key, main, sub, rect) in guide_buttons {
+            let resp = panel_button(ui, rect, main, sub, false, scale)
+                .on_hover_text(format!("{main} on the KO II. Click to see what it does."));
+            if resp.clicked() {
+                self.open_guide_for(ui.ctx(), key, main);
+            }
+        }
+        // Fader slider (between FADER and SHIFT).
+        let fader = cell(0, 3);
+        let resp = ui
+            .interact(fader, ui.scope_id().with("fader_slider"), egui::Sense::click())
+            .on_hover_text("The fader on the KO II. Click to see what it does.");
+        let track = egui::Rect::from_center_size(fader.center(), egui::vec2(6.0 * scale, fader.height() - 8.0));
+        ui.painter().rect_filled(track, 3.0, t.well);
+        let handle_color = if resp.is_pointer_button_down_on() { t.accent } else { t.soft };
+        ui.painter().circle(fader.center(), 9.0 * scale, t.pad, egui::Stroke::new(2.0, handle_color));
+        if resp.clicked() {
+            self.open_guide_for(ui.ctx(), Key::FaderSlider, "the fader");
         }
 
-        let loop_cell = cell(2, 0, 1);
-        ui.painter().text(loop_cell.left_top() + egui::vec2(2.0, caption_y), egui::Align2::LEFT_TOP, "LOOP", caption.clone(), t.soft);
-        ui.scope_builder(egui::UiBuilder::new().max_rect(top_control(loop_cell)), |ui| {
-            egui::ComboBox::from_id_salt("loop_bars")
-                .width(loop_cell.width())
-                .selected_text(format!("{} bars", s.bars))
-                .show_ui(ui, |ui| {
-                    for bars in LOOP_CHOICES {
-                        changed |= ui.selectable_value(&mut s.bars, bars, format!("{bars} bars")).changed();
-                    }
-                });
-        });
-
-        let fill_cell = cell(3, 0, 1);
-        ui.painter().text(fill_cell.left_top() + egui::vec2(2.0, caption_y), egui::Align2::LEFT_TOP, "FILL", caption.clone(), t.soft);
-        ui.scope_builder(egui::UiBuilder::new().max_rect(top_control(fill_cell)), |ui| {
-            changed |= ui
-                .checkbox(&mut s.fills, "On last bar")
-                .on_hover_text("Play a drum fill on the last bar of the loop.")
-                .changed();
-        });
-
-        changed |= knob(ui, cell(4, 0, 1), "bpm", "BPM", &mut s.bpm, 60.0..=140.0, " BPM");
-        changed |= knob(ui, cell(5, 0, 1), "swing", "SWING", &mut s.swing, 50.0..=75.0, "%");
-
-        // --- Group buttons A-D, left of the pads.
+        // Group buttons A-D.
         for (g, name) in GROUPS.iter().enumerate() {
-            let on = self.group == g;
-            let text = egui::RichText::new(*name).size(big).color(if on { t.accent_ink } else { t.ink });
-            let mut button = egui::Button::new(text).corner_radius(12.0);
-            if on {
-                button = button.fill(t.accent).stroke(egui::Stroke::new(1.0, t.accent));
-            }
-            if ui.put(cell(0, g + 1, 1), button).on_hover_text(format!("Show group {name}")).clicked() {
+            if panel_button(ui, cell(1, g + 1), name, "", self.group == g, scale)
+                .on_hover_text(format!("Show group {name}"))
+                .clicked()
+            {
                 self.group = g;
             }
         }
 
-        // --- Pads.
+        // Pads.
         let mut down_now: Option<u8> = None;
         for row in 0..4 {
             for col in 0..3 {
                 let p = row * 3 + col;
-                let rect = cell(col + 1, row + 1, 1);
+                let rect = cell(col + 2, row + 1);
                 let resp = ui.interact(rect, ui.scope_id().with(("pad", p)), egui::Sense::click_and_drag());
                 let mut pressed = resp.is_pointer_button_down_on();
                 if pressed {
@@ -594,57 +613,114 @@ impl KoiiApp {
             self.held = down_now;
         }
 
-        // --- Right side buttons.
-        let side_button = |text: &str, size: f32| egui::Button::new(egui::RichText::new(text).size(size)).corner_radius(12.0);
-        if ui.put(cell(4, 1, 2), side_button("🎲  New beat", 15.0 * scale)).on_hover_text("Make a new beat in this style.").clicked() {
-            s.beat = beat::new_beat(self.style);
-            changed = true;
-        }
-        let can_read = self.connected() && !self.reading;
-        let read_rect = cell(4, 2, 2);
-        let read = ui
-            .add_enabled_ui(can_read, |ui| ui.put(read_rect, side_button("Read pads from KO II", 14.0 * scale)))
-            .inner
-            .on_hover_text("Gets the sound names from the KO II. Only reads, nothing is changed.\nTip: close the TE Sample Tool web page first.")
-            .on_disabled_hover_text("Plug in the KO II first. Tip: close the TE Sample Tool web page.");
-        if read.clicked() {
-            self.reading = true;
-            self.read_message = "Starting…".into();
-            self.ko2.send(Command::ReadPads);
-        }
-        if self.reading {
-            let spot = egui::Rect::from_center_size(read_rect.right_center() - egui::vec2(16.0, 0.0), egui::vec2(16.0, 16.0));
-            ui.put(spot, egui::Spinner::new());
-        }
-        if ui.put(cell(4, 3, 1), side_button("−", 24.0 * scale)).on_hover_text("Tempo down 1 BPM").clicked() {
+        // - / + : tempo by 1. PLAY: play / stop.
+        if panel_button(ui, cell(5, 3), "−", "", false, scale).on_hover_text("Tempo down 1 BPM").clicked() {
             s.bpm = (s.bpm.round() - 1.0).max(60.0);
             changed = true;
         }
-        if ui.put(cell(5, 3, 1), side_button("+", 24.0 * scale)).on_hover_text("Tempo up 1 BPM").clicked() {
+        if panel_button(ui, cell(6, 3), "+", "", false, scale).on_hover_text("Tempo up 1 BPM").clicked() {
             s.bpm = (s.bpm.round() + 1.0).min(140.0);
             changed = true;
         }
-        if ui.put(cell(4, 4, 1), side_button("■  Stop", 15.0 * scale)).clicked() {
-            s.playing = false;
-            changed = true;
-        }
-        let play_text = egui::RichText::new("▶  Play").size(15.0 * scale).color(t.accent_ink);
-        let play = egui::Button::new(play_text).fill(t.accent).stroke(egui::Stroke::new(1.0, t.accent)).corner_radius(12.0);
-        if ui.put(cell(5, 4, 1), play).clicked() {
-            s.playing = true;
+        let (play_main, play_sub) = if s.playing { ("PLAY", "■ stop") } else { ("PLAY", "▶ start") };
+        if panel_button(ui, cell(6, 4), play_main, play_sub, s.playing, scale)
+            .on_hover_text("Start or stop the beat, like PLAY on the KO II.")
+            .clicked()
+        {
+            s.playing = !s.playing;
             changed = true;
         }
 
         if changed {
-            self.drummer.update(|d| {
-                d.playing = s.playing;
-                d.bpm = s.bpm;
-                d.swing = s.swing;
-                d.fills = s.fills;
-                d.bars = s.bars;
-                d.beat = s.beat.clone();
-            });
+            self.push_beat_settings(&s);
         }
+    }
+
+    /// Send changed beat settings to the drummer thread.
+    fn push_beat_settings(&self, s: &drummer::Settings) {
+        self.drummer.update(|d| {
+            d.playing = s.playing;
+            d.bpm = s.bpm;
+            d.swing = s.swing;
+            d.fills = s.fills;
+            d.bars = s.bars;
+            d.volume = s.volume;
+            d.beat = s.beat.clone();
+        });
+    }
+
+    /// Open the Button Guide card on the answers that use this KO II button.
+    fn open_guide_for(&mut self, ctx: &egui::Context, key: howto::Key, name: &'static str) {
+        self.help.show_key(key, name);
+        if !self.help_open {
+            self.toggle_help(ctx);
+        }
+    }
+
+    /// The beat "screen" at the top, like the KO II display: app controls, then the 16 steps.
+    fn beat_screen(&mut self, ui: &mut egui::Ui) {
+        let scale = help::text_scale(ui);
+        let mut s = self.drummer.get();
+        let mut changed = false;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            ui.weak("Style");
+            let mut style = self.style;
+            egui::ComboBox::from_id_salt("style")
+                .width(120.0 * scale)
+                .selected_text(style.name())
+                .show_ui(ui, |ui| {
+                    for st in STYLES {
+                        ui.selectable_value(&mut style, st, st.name());
+                    }
+                });
+            if style != self.style {
+                // New style: its own tempo, swing and a fresh beat.
+                self.style = style;
+                (s.bpm, s.swing) = style.defaults();
+                s.beat = beat::new_beat(style);
+                changed = true;
+            }
+            ui.add_space(6.0);
+            ui.weak("Loop");
+            egui::ComboBox::from_id_salt("loop_bars")
+                .width(80.0 * scale)
+                .selected_text(format!("{} bars", s.bars))
+                .show_ui(ui, |ui| {
+                    for bars in LOOP_CHOICES {
+                        changed |= ui.selectable_value(&mut s.bars, bars, format!("{bars} bars")).changed();
+                    }
+                });
+            ui.add_space(6.0);
+            changed |= ui
+                .checkbox(&mut s.fills, "Fill on last bar")
+                .on_hover_text("Play a drum fill on the last bar of the loop.")
+                .changed();
+            ui.add_space(6.0);
+            if ui.button("🎲  New beat").on_hover_text("Make a new beat in this style.").clicked() {
+                s.beat = beat::new_beat(self.style);
+                changed = true;
+            }
+            let can_read = self.connected() && !self.reading;
+            if ui
+                .add_enabled(can_read, egui::Button::new("Read pads from KO II"))
+                .on_hover_text("Gets the sound names from the KO II. Only reads, nothing is changed.\nTip: close the TE Sample Tool web page first.")
+                .on_disabled_hover_text("Plug in the KO II first. Tip: close the TE Sample Tool web page.")
+                .clicked()
+            {
+                self.reading = true;
+                self.read_message = "Starting…".into();
+                self.ko2.send(Command::ReadPads);
+            }
+            if self.reading {
+                ui.spinner();
+            }
+        });
+        if changed {
+            self.push_beat_settings(&s);
+        }
+        ui.add_space(8.0);
+        self.beat_view(ui);
     }
 
     /// "Now playing": 16 steps (one bar) x 3 drums, the step now playing outlined,
@@ -1059,4 +1135,32 @@ fn knob(
     let dir = egui::vec2(a.cos(), a.sin());
     painter.line_segment([c + dir * inner * 0.35, c + dir * inner * 0.85], egui::Stroke::new(2.5 * scale, t.ink));
     *value != before
+}
+
+/// One KO II-style button: main label, and the second label (its SHIFT job) under it.
+/// Lights up while pressed, and stays lit when `on`.
+fn panel_button(ui: &mut egui::Ui, rect: egui::Rect, main: &str, sub: &str, on: bool, scale: f32) -> egui::Response {
+    let t = theme::current();
+    let resp = ui.interact(rect, ui.scope_id().with(("panel_button", main)), egui::Sense::click());
+    let pressed = resp.is_pointer_button_down_on();
+    let painter = ui.painter();
+    let radius = 12.0;
+    let (fill, text, soft) = if on { (t.accent, t.accent_ink, t.accent_ink) } else { (t.pad, t.ink, t.soft) };
+    painter.rect_filled(rect, radius, fill);
+    if pressed {
+        painter.rect_filled(rect, radius, t.accent.gamma_multiply(0.45));
+    }
+    let stroke = if resp.hovered() || pressed { t.accent } else { t.line };
+    painter.rect_stroke(rect, radius, egui::Stroke::new(1.0, stroke), egui::StrokeKind::Inside);
+    // One-letter labels (A-D, -, +) are big, like on the device.
+    let size = if main.chars().count() == 1 { 20.0 } else { 13.0 };
+    let main_font = egui::FontId::proportional(size * scale);
+    if sub.is_empty() {
+        painter.text(rect.center(), egui::Align2::CENTER_CENTER, main, main_font, text);
+    } else {
+        let sub_font = egui::FontId::proportional(10.5 * scale);
+        painter.text(rect.center() - egui::vec2(0.0, 7.0 * scale), egui::Align2::CENTER_CENTER, main, main_font, text);
+        painter.text(rect.center() + egui::vec2(0.0, 9.0 * scale), egui::Align2::CENTER_CENTER, sub, sub_font, soft);
+    }
+    resp
 }

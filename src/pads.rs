@@ -45,6 +45,20 @@ pub fn group_from_event(fid: u16, active: u64) -> Option<usize> {
     }
 }
 
+/// Project and pad from a pad's SysEx file id (the reverse of `pad_file_id`).
+pub fn pad_from_file_id(fid: u16) -> Option<(u8, PadRef)> {
+    if fid < 3000 {
+        return None;
+    }
+    let rest = fid % 1000;
+    let (group_part, index) = (rest / 100, rest % 100);
+    if !(2..=5).contains(&group_part) || !(1..=12).contains(&index) {
+        return None;
+    }
+    let project = ((fid - 2000) / 1000) as u8;
+    Some((project, PadRef { group: (group_part - 2) as usize, pad: (index - 1) as usize }))
+}
+
 /// SysEx file id of a pad node: 2000 + 1000*project + 200 + 100*group + index (1-12).
 pub fn pad_file_id(project: u8, group: usize, pad: usize) -> u16 {
     2000 + 1000 * project as u16 + 200 + 100 * group as u16 + pad as u16 + 1
@@ -181,6 +195,22 @@ impl PadMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pad_from_file_id_reverses_pad_file_id() {
+        for project in 1..=9 {
+            for group in 0..4 {
+                for pad in 0..12 {
+                    let fid = pad_file_id(project, group, pad);
+                    assert_eq!(pad_from_file_id(fid), Some((project, PadRef { group, pad })));
+                }
+            }
+        }
+        // Seen on the owner's KO II: pad "3" in group A of project 2.
+        assert_eq!(pad_from_file_id(4209), Some((2, PadRef { group: 0, pad: 8 })));
+        assert_eq!(pad_from_file_id(4100), None); // groups folder
+        assert_eq!(pad_from_file_id(4200), None); // group folder
+    }
 
     #[test]
     fn group_from_event_reads_groups_folder() {

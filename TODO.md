@@ -19,7 +19,8 @@ Short list. One line each. Done work lives in README (Phases) and git history.
 
 ## Polish list (owner said: looks and details need a lot more work)
 
-- [ ] Test on the KO II: press pads on the device (app pad lights up?) and press A/B/C/D (app group follows?)
+- [ ] Owner to check: pads light up and A-D follow when pressed on the KO II; pad name changes when its sound is changed on the KO II
+- [ ] Sound names are kept only until the app closes: save them so "Sound 124" shows a real name after a restart
 - [ ] Ask the owner for their list of look and detail changes before Phase 7
 - [ ] Hide the black console window (release build already hides it)
 - [ ] Help card can fall behind other apps when another window is clicked (needs Windows "owner window"; may need `windows-sys`, ask first)
