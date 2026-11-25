@@ -35,6 +35,9 @@ fn help_card_width(ctx: &egui::Context) -> f32 {
     let normal = egui::Style::default().text_styles[&egui::TextStyle::Body].size;
     HELP_CARD_WIDTH * now / normal
 }
+/// How long a pad lights up after it is pressed on the KO II.
+const FLASH: std::time::Duration = std::time::Duration::from_millis(200);
+
 // Windows 10/11 adds an invisible border (left, right, bottom) around normal windows, in points.
 const WINDOW_INVISIBLE_BORDER: f32 = 8.0;
 
@@ -61,8 +64,20 @@ fn main() -> eframe::Result {
 /// USB connection state shown in the top bar.
 enum Link {
     NotConnected,
+    /// Handed to TE's web tools on purpose ("Let go"): the app stays away until Reconnect.
+    LetGo,
     Connected(String),
     Busy(String),
+}
+
+/// What was clicked in the Settings "KO II" part.
+#[derive(Clone, Copy, PartialEq)]
+enum Ko2Action {
+    None,
+    CheckUpdate,
+    /// Let go of the KO II, then open this TE web tool in the browser.
+    OpenTool(&'static str),
+    Reconnect,
 }
 
 /// "Check for update" in Settings.
@@ -100,6 +115,10 @@ struct KoiiApp {
     held: Option<u8>,
     /// Pads held down on the KO II itself (their MIDI notes), shown lit.
     device_held: Vec<u8>,
+    /// Pads whose MIDI channel differs from most pads (from "Read pads"), with the KO II's value.
+    odd_midi: Vec<(PadRef, String)>,
+    /// Pad last pressed on the KO II and when (flashes briefly, also for pads that send no note).
+    device_flash: Option<(PadRef, std::time::Instant)>,
     /// Last thing the KO II sent, in words (status bar).
     last_from_device: Option<String>,
     /// Settings: newest KO II OS check.
@@ -164,6 +183,8 @@ impl KoiiApp {
             held: None,
             device_held: Vec::new(),
             last_from_device: None,
+            device_flash: None,
+            odd_midi: Vec::new(),
             sound_names: std::collections::HashMap::new(),
             update_check: UpdateCheck::NotChecked,
             reading: false,
@@ -193,6 +214,11 @@ impl KoiiApp {
                     }
                 }
                 Event::Busy(msg) => self.link = Link::Busy(msg),
+                Event::LetGoDone => {
+                    self.link = Link::LetGo;
+                    self.held = None;
+                    self.device_held.clear();
+                }
                 Event::ReadProgress(msg) => {
                     self.read_message = msg;
                     self.last_from_device = None;
@@ -208,13 +234,19 @@ impl KoiiApp {
                     self.os_version = result.os_version.clone();
                     self.apply_read(result);
                 }
-                // Pressed on the KO II: follow its group and light the pad.
+                // Held down on the KO II: light the pad while held.
                 Event::DeviceNote { note, on } => {
                     self.device_held.retain(|&n| n != note);
-                    if on && let Some(pad) = pads::pad_from_note(note) {
+                    if on && pads::pad_from_note(note).is_some() {
                         self.device_held.push(note);
+                    }
+                }
+                // Pressed on the KO II: follow its group, pick the pad, flash it.
+                Event::DevicePadActive { project, pad } => {
+                    if self.pad_map.project.is_none_or(|p| p == project) {
                         self.group = pad.group;
                         self.selected = Some(pad.pad);
+                        self.device_flash = Some((pad, std::time::Instant::now()));
                     }
                 }
                 Event::DeviceGroup(group) => self.group = group,
@@ -274,6 +306,27 @@ impl KoiiApp {
         } else {
             format!("Read project {}: {found} of 48 pads have a sound.", result.project)
         };
+        self.odd_midi = odd_midi_pads(&result.midi_channels);
+        if !self.odd_midi.is_empty() {
+            let list: Vec<String> = self
+                .odd_midi
+                .iter()
+                .map(|(r, v)| format!("{} {} (MIDI {v})", GROUPS[r.group], PAD_LABELS[r.pad]))
+                .collect();
+            self.read_message += &format!(" Pads on another MIDI channel: {}.", list.join(", "));
+        }
+    }
+
+    /// Stop the beat and close the KO II ports, so TE's web tools can use it.
+    fn let_go(&mut self) {
+        self.drummer.update(|d| d.playing = false);
+        self.ko2.send(Command::LetGo);
+    }
+
+    /// Take the KO II back after "let go".
+    fn reconnect(&mut self) {
+        self.link = Link::NotConnected;
+        self.ko2.send(Command::Reconnect);
     }
 
     fn connected(&self) -> bool {
@@ -405,12 +458,13 @@ impl eframe::App for KoiiApp {
 
 impl KoiiApp {
     /// Bottom line: connection (with a dot), project, read news; beat state on the right.
-    fn status_bar(&self, ui: &mut egui::Ui) {
+    fn status_bar(&mut self, ui: &mut egui::Ui) {
         let t = theme::current();
         let (dot, link, color) = match &self.link {
             Link::Connected(_) => (egui::Color32::from_rgb(80, 190, 120), "KO II connected", t.soft),
             Link::Busy(_) => (t.warn, "No sound: another app is using the KO II", t.warn),
             Link::NotConnected => (t.warn, "KO II not connected: plug it in with USB-C", t.warn),
+            Link::LetGo => (t.soft, "KO II handed to TE's web tool. Close that page, then press Reconnect", t.warn),
         };
         // Left text: connection, project, OS, then the newest news (KO II or "Read pads").
         let mut left = link.to_string();
@@ -430,7 +484,7 @@ impl KoiiApp {
         let full = match &self.link {
             Link::Connected(port) | Link::Busy(port) => format!("{left}
 {port}"),
-            Link::NotConnected => left.clone(),
+            Link::NotConnected | Link::LetGo => left.clone(),
         };
 
         // Right side first, so the left text gets the room that is left and is cut with "…".
@@ -441,6 +495,9 @@ impl KoiiApp {
             ui.add_space(16.0);
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
+                if matches!(self.link, Link::LetGo) && ui.small_button("Reconnect").clicked() {
+                    self.reconnect();
+                }
                 ui.colored_label(dot, "●");
                 ui.add(egui::Label::new(egui::RichText::new(left).color(color)).truncate())
                     .on_hover_text(full);
@@ -456,7 +513,7 @@ impl KoiiApp {
         let mut done = false;
         let mut picked_theme = self.settings.theme;
         let mut picked_size = self.settings.text_size;
-        let mut check_clicked = false;
+        let mut action = Ko2Action::None;
         if let UpdateCheck::Checking(rx) = &self.update_check {
             if let Ok(result) = rx.try_recv() {
                 self.update_check = UpdateCheck::Done(result);
@@ -500,7 +557,7 @@ impl KoiiApp {
                 ui.add_space(16.0);
                 ui.separator();
                 ui.add_space(8.0);
-                check_clicked = self.ko2_settings(ui);
+                action = self.ko2_settings(ui);
             });
             ui.add_space(14.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -510,7 +567,17 @@ impl KoiiApp {
                 }
             });
         });
-        if check_clicked && !matches!(self.update_check, UpdateCheck::Checking(_)) {
+        match action {
+            Ko2Action::OpenTool(url) => {
+                self.let_go();
+                if !url.is_empty() {
+                    ctx.open_url(egui::OpenUrl::new_tab(url));
+                }
+            }
+            Ko2Action::Reconnect => self.reconnect(),
+            Ko2Action::None | Ko2Action::CheckUpdate => {}
+        }
+        if action == Ko2Action::CheckUpdate && !matches!(self.update_check, UpdateCheck::Checking(_)) {
             let (tx, rx) = std::sync::mpsc::channel();
             let repaint = ctx.clone();
             std::thread::spawn(move || {
@@ -538,10 +605,10 @@ impl KoiiApp {
 
     /// Settings, "KO II" part: OS version and update check, backup / restore, factory format.
     /// Updates, backups and restores are done with TE's own web tools (safer than doing it here).
-    /// Returns true when "Check for update" was clicked.
-    fn ko2_settings(&self, ui: &mut egui::Ui) -> bool {
+    /// Returns what was clicked.
+    fn ko2_settings(&self, ui: &mut egui::Ui) -> Ko2Action {
         let t = theme::current();
-        let mut check_clicked = false;
+        let mut action = Ko2Action::None;
         ui.strong("KO II");
         ui.add_space(4.0);
 
@@ -553,7 +620,7 @@ impl KoiiApp {
             };
             let checking = matches!(self.update_check, UpdateCheck::Checking(_));
             if ui.add_enabled(!checking, egui::Button::new("Check for update")).clicked() {
-                check_clicked = true;
+                action = Ko2Action::CheckUpdate;
             }
             if checking {
                 ui.spinner();
@@ -575,13 +642,39 @@ impl KoiiApp {
                 }
             }
         }
-        ui.hyperlink_to("Open TE update tool ↗", update::UPDATE_URL);
+        if ui
+            .button("Open TE update tool ↗")
+            .on_hover_text("KO II Buddy lets go of the KO II first, so TE's page can use it.")
+            .clicked()
+        {
+            action = Ko2Action::OpenTool(update::UPDATE_URL);
+        }
         ui.add_space(10.0);
 
         // Backup and restore.
         ui.label("Backup and restore");
-        ui.weak("Use TE's EP Sample Tool (in Chrome or Edge) to back up or restore projects and sounds. Close KO II Buddy first, so the tool can reach the KO II.");
-        ui.hyperlink_to("Open EP Sample Tool ↗", update::SAMPLE_TOOL_URL);
+        ui.weak("Use TE's EP Sample Tool (in Chrome or Edge) to back up or restore projects and sounds.");
+        if ui
+            .button("Open EP Sample Tool ↗")
+            .on_hover_text("KO II Buddy lets go of the KO II first, so TE's page can use it.")
+            .clicked()
+        {
+            action = Ko2Action::OpenTool(update::SAMPLE_TOOL_URL);
+        }
+        ui.add_space(10.0);
+
+        // Sharing the KO II with TE's web tools: only one app can use it at a time.
+        ui.label("Sharing with TE's web tools");
+        ui.weak("Only one app can talk to the KO II at a time. The buttons above let go of it for you. When you are done, close TE's page, then press Reconnect.");
+        ui.horizontal(|ui| {
+            if matches!(self.link, Link::LetGo) {
+                if ui.button("Reconnect KO II").clicked() {
+                    action = Ko2Action::Reconnect;
+                }
+            } else if ui.button("Let go of KO II").on_hover_text("Close the KO II ports now, without opening a page.").clicked() {
+                action = Ko2Action::OpenTool("");
+            }
+        });
         ui.add_space(10.0);
 
         // Factory format (TE guide 14.4).
@@ -591,7 +684,7 @@ impl KoiiApp {
 2. Hold SHIFT + ERASE.
 3. Turn it on while you still hold them.");
         ui.weak("From the TE guide, 14.4 error codes.");
-        check_clicked
+        action
     }
 
     /// The main panel, laid out like the real KO II top panel (7 columns x 5 rows):
@@ -696,8 +789,15 @@ impl KoiiApp {
                     down_now = Some(pads::midi_note(self.group, p));
                     self.selected = Some(p);
                 }
-                // Lit while held down on the KO II itself.
+                // Lit while held down on the KO II itself, or just pressed there.
                 pressed |= self.device_held.contains(&pads::midi_note(self.group, p));
+                if let Some((flash, when)) = self.device_flash {
+                    let left = FLASH.saturating_sub(when.elapsed());
+                    if flash == (PadRef { group: self.group, pad: p }) && !left.is_zero() {
+                        pressed = true;
+                        ui.ctx().request_repaint_after(left);
+                    }
+                }
                 self.paint_pad(ui, rect, p, pressed, resp.hovered());
             }
         }
@@ -935,6 +1035,14 @@ impl KoiiApp {
         let here = PadRef { group: self.group, pad: p };
         let drum = DRUMS.iter().find(|d| self.pad_map.drums[**d as usize] == Some(here));
         let tag = drum.map(|d| painter.layout_no_wrap(d.name().to_string(), egui::FontId::proportional(11.0 * scale), t.soft));
+        // Pad set to another MIDI channel than the others: say so in orange (it can upset the beat).
+        let odd = self.odd_midi.iter().find(|(r, _)| *r == here).map(|(_, v)| {
+            painter.layout_no_wrap(format!("MIDI channel {v}"), egui::FontId::proportional(11.0 * scale), t.warn)
+        });
+        let (tag, drum) = match odd {
+            Some(g) => (Some(g), None),
+            None => (tag, drum),
+        };
 
         let line_gap = 2.0 * scale;
         let height = key.size().y + line_gap + name.size().y + tag.as_ref().map_or(0.0, |g| line_gap + g.size().y);
@@ -944,6 +1052,9 @@ impl KoiiApp {
         y += key.size().y + line_gap;
         painter.galley(egui::pos2(cx - name.size().x / 2.0, y), name.clone(), color);
         y += name.size().y + line_gap;
+        if let (Some(tag), None) = (&tag, drum) {
+            painter.galley(egui::pos2(cx - tag.size().x / 2.0, y), tag.clone(), t.warn);
+        }
         if let (Some(tag), Some(drum)) = (tag, drum) {
             // Coloured dot + drum name, centred together.
             let dot_r = 4.0 * scale;
@@ -1262,4 +1373,26 @@ fn panel_button(ui: &mut egui::Ui, rect: egui::Rect, main: &str, sub: &str, on: 
         painter.text(rect.center() + egui::vec2(0.0, 9.0 * scale), egui::Align2::CENTER_CENTER, sub, sub_font, soft);
     }
     resp
+}
+
+/// Pads whose `midi.channel` differs from the value most pads have (the normal one).
+fn odd_midi_pads(channels: &[Vec<Option<String>>]) -> Vec<(PadRef, String)> {
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for v in channels.iter().flatten().flatten() {
+        *counts.entry(v.as_str()).or_default() += 1;
+    }
+    let Some((&normal, _)) = counts.iter().max_by_key(|(_, n)| **n) else {
+        return Vec::new();
+    };
+    let mut odd = Vec::new();
+    for (g, group) in channels.iter().enumerate() {
+        for (p, v) in group.iter().enumerate() {
+            if let Some(v) = v
+                && v != normal
+            {
+                odd.push((PadRef { group: g, pad: p }, v.clone()));
+            }
+        }
+    }
+    odd
 }

@@ -28,4 +28,6 @@ Short list. One line each. Done work lives in README (Phases) and git history.
 - [ ] Card may lag a little when the main window is dragged fast
 - [ ] Check Large / Extra large text at the smallest window size (pads scroll at Extra large in the start-size window)
 - [ ] Owner to try all 7 themes and say which need colour fixes
+- [ ] Test on the KO II: Settings "Open EP Sample Tool" lets go, the TE page connects, then close the page and Reconnect
+- [ ] Bug (2026-11-25): beat sound changes after pressing group B pads 2/3 on the KO II. Read pads confirms: B2 and B3 have `midi.channel` 2, all other pads 0 (Phase 4 test leftover). Owner to set them back like the other pads, then retest. (App jumping back to group A: fixed, it now follows the active-pad event.)
 - [ ] Play with no sound at first launch: seen once by the owner, cause unknown (maybe two copies of the app open). Watch for it.

@@ -45,6 +45,11 @@ pub fn group_from_event(fid: u16, active: u64) -> Option<usize> {
     }
 }
 
+/// Is this file id a group folder (2000 + 1000*project + 200/300/400/500)?
+pub fn is_group_folder(fid: u16) -> bool {
+    fid >= 3000 && matches!(fid % 1000, 200 | 300 | 400 | 500)
+}
+
 /// Project and pad from a pad's SysEx file id (the reverse of `pad_file_id`).
 pub fn pad_from_file_id(fid: u16) -> Option<(u8, PadRef)> {
     if fid < 3000 {
@@ -210,6 +215,9 @@ mod tests {
         assert_eq!(pad_from_file_id(4209), Some((2, PadRef { group: 0, pad: 8 })));
         assert_eq!(pad_from_file_id(4100), None); // groups folder
         assert_eq!(pad_from_file_id(4200), None); // group folder
+        assert!(is_group_folder(4300));
+        assert!(!is_group_folder(4100));
+        assert!(!is_group_folder(4308));
     }
 
     #[test]

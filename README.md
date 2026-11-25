@@ -43,7 +43,7 @@ Tests: `cargo test`
 | 4 | Bass + melody | on hold: owner picking a way (see TODO.md and "KO II limits" below) |
 | 5 | Keep / Skip, song library, export MIDI file | |
 | 6 | You play, the app fills in the rest | |
-| 7 | Make it pretty; Settings: help panel on left or right | started: Settings window (7 themes, text size), beat screen on top, full KO II panel (every button, lit when pressed), knobs for VOL/BPM/Swing, loop length 4/8/16 bars, follows KO II pad and group presses, connection status in the bottom bar, new fonts, Settings "KO II" part (OS version, check for update, links to TE update tool and EP Sample Tool, format steps). Still to do: card side choice, owner's look list |
+| 7 | Make it pretty; Settings: help panel on left or right | started: Settings window (7 themes, text size), beat screen on top, full KO II panel (every button, lit when pressed), knobs for VOL/BPM/Swing, loop length 4/8/16 bars, follows KO II pad and group presses, connection status in the bottom bar, new fonts, Settings "KO II" part (OS version, check for update, buttons that let go of the KO II and open TE's update tool or EP Sample Tool, Reconnect, format steps). Still to do: card side choice, owner's look list |
 | 8 | Optional, risky: write songs into a KO II project (backup first) | |
 
 Open tasks and ideas: [TODO.md](TODO.md).
@@ -57,9 +57,14 @@ Open tasks and ideas: [TODO.md](TODO.md).
 - Pad reads (METADATA GET `sym`) worked on this firmware: 36 of 48 pads read in project 2.
 - What the KO II reports by itself (tested 2026-11-25, after a read-only FILE INIT on connect; log in `midi-log.txt`):
   - Pad press: note on/off on channel 1 (notes 36-83 by group) plus a metadata event `active` = pad file id.
+  - A pad set to another MIDI channel (sound edit, MIDI page) sends that channel and its own note instead (seen: group B pads 2 and 3 left on channel 2 from the Phase 4 test sent channel 2 notes 36 and 35). So the app follows the `active` pad event, not note numbers. Pad metadata has `midi.channel` (0 on normal pads); "Read pads" marks pads with a different value in orange.
   - Group A-D press: metadata event on the project's groups folder (e.g. file 4100 `active` 4200-4500).
   - Changing the sound on a pad (sound edit): metadata event `sym` = new sample slot, and `sample.end`.
   - VOL / X / Y knobs, SOUND, MAIN, TEMPO, KEYS, FADER, SHIFT, SAMPLE, TIMING, FX, ERASE, -, +, RECORD: nothing is sent, so the app cannot follow them. Twice an "all sound off" (channel 2, CC 120) came in, button unknown.
+
+## If the KO II stops showing up
+
+Windows' MIDI service can lose the KO II's MIDI ports ("EP-133 MIDI IN/OUT" gone, re-plugging does not help; seen 2026-11-25, maybe after the app was force-closed or a TE web page held the KO II). Fix: close KO II Buddy and TE's web pages, then run `Restart-Service midisrv -Force` in PowerShell as admin (or restart Windows), then plug the KO II in again.
 
 ## Rules for this project
 

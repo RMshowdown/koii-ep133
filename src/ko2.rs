@@ -37,19 +37,28 @@ pub enum Command {
     PadDown(u8),
     PadUp(u8),
     ReadPads,
+    /// Close the KO II ports so TE's web tools (update, Sample Tool) can use it. Stays closed until `Reconnect`.
+    LetGo,
+    /// Take the KO II back after `LetGo`.
+    Reconnect,
 }
 
 /// News from the MIDI thread to the window.
 pub enum Event {
     Connected(String),
     Disconnected,
+    /// The ports were closed on purpose (`LetGo`).
+    LetGoDone,
     /// The KO II is plugged in but we could not open it (another app may be using it).
     Busy(String),
     ReadProgress(String),
     ReadDone(ReadResult),
     ReadFailed(String),
-    /// A pad was pressed (on = true) or let go on the KO II itself: its MIDI note.
+    /// A pad was pressed (on = true) or let go on the KO II itself: its MIDI note (channel 1 only).
     DeviceNote { note: u8, on: bool },
+    /// A pad became the active one on the KO II (pressed there). More reliable than the note:
+    /// a pad set to another MIDI channel sends any note it likes.
+    DevicePadActive { project: u8, pad: pads::PadRef },
     /// A group (0 = A) was picked on the KO II itself.
     DeviceGroup(usize),
     /// The sound on a pad was changed on the KO II itself (new sample slot).
@@ -119,6 +128,8 @@ pub struct ReadResult {
     pub slots: Vec<Vec<Option<u16>>>,
     /// Sample slot -> name, from the /sounds list.
     pub sound_names: HashMap<u16, String>,
+    /// Each pad's `midi.channel` value as the KO II gives it (same layout as `slots`). None = not given.
+    pub midi_channels: Vec<Vec<Option<String>>>,
 }
 
 pub struct Ko2 {
@@ -170,6 +181,8 @@ struct Worker {
     out: MidiOut,
     conn: Option<Connection>,
     last_busy: Option<String>,
+    /// True after `LetGo`: do not open the KO II until `Reconnect`.
+    let_go: bool,
 }
 
 /// Errors while reading. `Debug` means the KO II reported a firmware error.
@@ -186,7 +199,7 @@ impl From<String> for ReadError {
 
 impl Worker {
     fn new(commands: Receiver<Command>, events: Sender<Event>, ctx: egui::Context, out: MidiOut) -> Self {
-        Self { commands, events, ctx, out, conn: None, last_busy: None }
+        Self { commands, events, ctx, out, conn: None, last_busy: None, let_go: false }
     }
 
     fn emit(&self, event: Event) {
@@ -203,7 +216,7 @@ impl Worker {
                 Err(RecvTimeoutError::Disconnected) => return, // window closed
             }
             self.check_device_events();
-            if Instant::now() >= next_check {
+            if Instant::now() >= next_check && !self.let_go {
                 self.check_connection();
                 next_check = Instant::now() + Duration::from_secs(1);
             }
@@ -215,6 +228,19 @@ impl Worker {
             Command::PadDown(note) => self.send_midi(&[0x90, note, 100]),
             Command::PadUp(note) => self.send_midi(&[0x80, note, 0]),
             Command::ReadPads => self.read_pads(),
+            Command::LetGo => {
+                self.let_go = true;
+                if let Some(conn) = self.conn.take() {
+                    self.out.set(None);
+                    drop(conn); // closes the input port too
+                }
+                self.last_busy = None;
+                self.emit(Event::LetGoDone);
+            }
+            Command::Reconnect => {
+                self.let_go = false;
+                self.check_connection();
+            }
         }
     }
 
@@ -279,6 +305,10 @@ impl Worker {
         let Some(conn) = &self.conn else { return };
         let mut group = None;
         while let Ok(frame) = conn.sysex.try_recv() {
+            // Late answers to our own "Read pads" requests (byte 6 = 0x20 | id): not news, skip.
+            if frame.len() > 6 && frame[6] & 0x60 == 0x20 {
+                continue;
+            }
             let shown = &frame[..frame.len().min(120)];
             midi_log::write(&format!("sysex {} bytes: {}", frame.len(), midi_log::hex(shown)));
             if let Some((fid, json)) = sysex::parse_metadata_event(&frame) {
@@ -287,6 +317,13 @@ impl Worker {
                 if let Some(g) = active.and_then(|a| pads::group_from_event(fid, a)) {
                     group = Some(g);
                     let _ = self.events.send(Event::DeviceMessage(format!("picked group {}", GROUPS[g])));
+                } else if let Some((project, pad)) = active
+                    .and_then(|a| u16::try_from(a).ok())
+                    .and_then(pads::pad_from_file_id)
+                    .filter(|_| pads::is_group_folder(fid))
+                {
+                    group = None; // the pad says which group it is in
+                    let _ = self.events.send(Event::DevicePadActive { project, pad });
                 } else if let (Some((project, pad)), Some(slot)) =
                     (pads::pad_from_file_id(fid), json.get("sym").and_then(|v| v.as_u64()))
                 {
@@ -345,6 +382,7 @@ impl Worker {
         let sound_names = list_names(conn, 1000)?;
 
         let mut slots = vec![vec![None; 12]; 4];
+        let mut midi_channels = vec![vec![None; 12]; 4];
         for (g, group_slots) in slots.iter_mut().enumerate() {
             let _ = self
                 .events
@@ -352,6 +390,13 @@ impl Worker {
             self.ctx.request_repaint();
             for (p, slot) in group_slots.iter_mut().enumerate() {
                 let meta = metadata_get(conn, pads::pad_file_id(project, g, p))?;
+                midi_log::write(&format!(
+                    "read pad {} {}: {}",
+                    GROUPS[g],
+                    pads::PAD_LABELS[p],
+                    serde_json::Value::Object(meta.clone())
+                ));
+                midi_channels[g][p] = meta.get("midi.channel").map(|v| v.to_string());
                 *slot = meta
                     .get("sym")
                     .and_then(|v| v.as_u64())
@@ -382,7 +427,7 @@ impl Worker {
             }
         }
 
-        Ok(ReadResult { project, os_version, slots, sound_names: names })
+        Ok(ReadResult { project, os_version, slots, sound_names: names, midi_channels })
     }
 }
 
@@ -438,7 +483,9 @@ fn open(port_name: &str, shared_out: &MidiOut, events: Sender<Event>, ctx: egui:
                         0x80 => Some(false),
                         _ => None,
                     };
-                    if let Some(on) = on {
+                    // Channel 1 = normal pad notes. Other channels: pads set to send MIDI elsewhere
+                    // (their note numbers do not say which pad it is), so only the log sees them.
+                    if let (Some(on), 0) = (on, status & 0x0F) {
                         let _ = events.send(Event::DeviceNote { note, on });
                         ctx.request_repaint();
                         return;
